@@ -337,7 +337,7 @@ def _make_result(grade, code, name, close, ma5, ma20, rsi,
         'grade':      grade,
         'code':       code,
         'name':       name,
-        'sector':     sector,
+        'sector': '',
         'close':      close,
         'ma5':        round(ma5,  0) if ma5  else 0,
         'ma20':       round(ma20, 0) if ma20 else 0,
@@ -359,8 +359,8 @@ def render_table(df_result, grade):
         st.info("해당 종목 없음")
         return
 
-    cols      = ['name', 'sector', 'code', 'close', 'ma20', 'rsi', 'vol_ratio', 'pullback', 'reason']
-    col_names = ['종목명', '업종', '코드', '현재가', '20일선', 'RSI', '거래량비율(%)', '고점대비(%)', '사유']
+    cols      = ['name', 'code', 'close', 'ma20', 'rsi', 'vol_ratio', 'pullback', 'reason']
+    col_names = ['종목명', '코드', '현재가', '20일선', 'RSI', '거래량비율(%)', '고점대비(%)', '사유']
     st.dataframe(d[cols].rename(columns=dict(zip(cols, col_names))), use_container_width=True)
 
     st.markdown("**🔗 종목별 바로가기**")
@@ -422,7 +422,7 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         with tab5:
             if watch_high:
                 wh = pd.DataFrame(watch_high)
-                st.dataframe(wh[['name','sector','code','close','rsi','reason']], use_container_width=True)
+                st.dataframe(wh[['name','code','close','rsi','reason']], use_container_width=True)
                 st.markdown("**🔗 종목별 바로가기**")
                 wh_cols = st.columns(min(len(wh), 5))
                 for i, (_, row) in enumerate(wh.iterrows()):
