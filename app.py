@@ -5,11 +5,60 @@ from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
 from datetime import datetime, timedelta
 import warnings
+import random
+import urllib.request
+import xml.etree.ElementTree as ET
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 st.title("📈 스윙 종목 스크리너")
 st.caption(f"기준일: {datetime.today().strftime('%Y-%m-%d')}")
+
+# ──────────────────────────────────────────────
+# 용어 데이터
+# ──────────────────────────────────────────────
+ALL_TERMS = [
+    ("이동평균선(MA)", "일정 기간 종가의 평균을 이은 선. 5일·20일·60일선으로 추세 파악"),
+    ("눌림목", "상승 추세 중 일시적으로 가격이 내려오는 구간. 스윙 매수 기회"),
+    ("정배열", "5일선 > 20일선 > 60일선 순서. 강한 상승 추세 신호"),
+    ("역배열", "5일선 < 20일선 < 60일선 순서. 하락 추세 신호"),
+    ("박스권", "일정 가격 범위 안에서 횡보하는 구간"),
+    ("장대양봉", "시가 대비 종가가 크게 오른 캔들. 강한 매수세 신호"),
+    ("장대음봉", "시가 대비 종가가 크게 내린 캔들. 강한 매도세 신호"),
+    ("갭상승", "전일 종가보다 당일 시가가 높게 시작하는 것"),
+    ("갭하락", "전일 종가보다 당일 시가가 낮게 시작하는 것"),
+    ("RSI", "상대강도지수. 70 이상 과열(매도 검토), 30 이하 과매도(매수 검토)"),
+    ("거래량", "그날 매매된 주식 수. 거래량 급증은 큰 수급 변화 신호"),
+    ("거래대금", "거래량 × 가격. 실제 자금 흐름을 나타냄"),
+    ("시가총액", "주가 × 발행주식수. 회사 전체 가치"),
+    ("스윙매매", "수일~수주 단위로 추세를 타고 매매하는 방식"),
+    ("손절", "손실을 확정하고 파는 것. 더 큰 손실 방지를 위해 필수"),
+    ("익절", "수익을 확정하고 파는 것"),
+    ("물타기", "하락 중 추가 매수해 평균 단가를 낮추는 것. 위험 수반"),
+    ("불타기", "상승 중 추가 매수해 수익을 극대화하는 것"),
+    ("저항선", "주가 상승을 막는 가격대. 돌파 시 강한 매수 신호"),
+    ("지지선", "주가 하락을 막는 가격대. 이탈 시 추가 하락 신호"),
+    ("골든크로스", "단기선이 장기선을 상향 돌파. 매수 신호"),
+    ("데드크로스", "단기선이 장기선을 하향 돌파. 매도 신호"),
+    ("상한가", "하루 주가 상승 한도(±30%). 강한 매수세 신호"),
+    ("하한가", "하루 주가 하락 한도(-30%). 강한 매도세 신호"),
+    ("시가", "당일 첫 번째 체결 가격"),
+    ("종가", "당일 마지막 체결 가격. 차트 분석 기준"),
+    ("고가", "당일 최고 체결 가격"),
+    ("저가", "당일 최저 체결 가격"),
+    ("캔들차트", "시가·고가·저가·종가 4가지를 하나의 막대로 표현한 차트"),
+    ("볼린저밴드", "이동평균선과 표준편차로 만든 상하 밴드. 변동성 파악"),
+    ("MACD", "단기·장기 이동평균 차이로 추세 전환 파악하는 지표"),
+    ("거래량이동평균", "일정 기간 거래량 평균. 거래량 급증 여부 판단 기준"),
+    ("수급", "주식 시장에서 사려는 힘(수요)과 팔려는 힘(공급)의 균형"),
+    ("외국인", "외국인 투자자. 대량 매수/매도는 주가에 큰 영향"),
+    ("기관", "연기금·펀드 등 기관 투자자. 큰 자금으로 추세 형성"),
+    ("공매도", "주식을 빌려서 팔고 나중에 되사는 것. 하락에 베팅"),
+    ("배당", "회사가 이익 일부를 주주에게 나눠주는 것"),
+    ("PER", "주가/주당순이익. 낮을수록 저평가 가능성"),
+    ("PBR", "주가/주당순자산. 1 이하면 자산 대비 저평가"),
+    ("EPS", "주당순이익. 회사가 주식 1주당 얼마나 벌었는지"),
+]
 
 # ──────────────────────────────────────────────
 # 사이드바
@@ -46,34 +95,21 @@ if calc_price > 0 and seed > 0:
     st.sidebar.write(f"최대 매수 수량: **{qty_max:,}주** ({int(qty_max*calc_price):,}원)")
 
 # ──────────────────────────────────────────────
-# 용어 사전
+# 오늘의 용어 (랜덤 5개)
 # ──────────────────────────────────────────────
-with st.expander("📚 주식 용어 공부 (클릭해서 펼치기)"):
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("""
-**📈 차트 용어**
-- **이동평균선(MA)**: 일정 기간 종가의 평균선. 5일선·20일선·60일선으로 추세 파악
-- **눌림목**: 상승 추세 중 일시적으로 가격이 내려오는 구간. 매수 기회
-- **정배열**: 5일선 > 20일선 > 60일선 순서. 강한 상승 추세 신호
-- **박스권**: 일정 범위 안에서 횡보하는 구간
-- **장대양봉/음봉**: 시가 대비 종가가 크게 오른(양) / 내린(음) 캔들
-- **갭상승/하락**: 전일 종가보다 당일 시가가 크게 올라/내려 시작하는 것
-        """)
-    with col2:
-        st.markdown("""
-**📊 지표 용어**
-- **RSI**: 과매수/과매도 측정 지표. 70 이상 과열, 30 이하 과매도
-- **거래량**: 그날 매매된 주식 수. 거래량 증가 = 관심 증가
-- **거래대금**: 거래량 × 가격. 실제 돈의 흐름
-- **시가총액**: 주가 × 발행주식수. 회사 규모
+with st.expander("📚 오늘의 주식 용어 (클릭해서 펼치기)"):
+    if 'today_terms' not in st.session_state:
+        st.session_state.today_terms = random.sample(ALL_TERMS, 5)
 
-**💡 매매 용어**
-- **스윙매매**: 수일~수주 단위로 매매하는 방식
-- **손절**: 손실을 확정하고 파는 것. 더 큰 손실 방지
-- **익절**: 수익을 확정하고 파는 것
-- **1차 매수**: 전체 매수 물량의 일부만 먼저 사는 것
-        """)
+    col1, col2 = st.columns(2)
+    for i, (term, desc) in enumerate(st.session_state.today_terms):
+        with (col1 if i % 2 == 0 else col2):
+            st.markdown(f"**{term}**")
+            st.caption(desc)
+
+    if st.button("🔀 다른 용어 보기"):
+        st.session_state.today_terms = random.sample(ALL_TERMS, 5)
+        st.rerun()
 
 # ──────────────────────────────────────────────
 # 매매 기록
@@ -97,15 +133,15 @@ with st.expander("📝 매매 기록 (클릭해서 펼치기)"):
         submitted = st.form_submit_button("기록 추가")
         if submitted and t_name and t_price > 0 and t_qty > 0:
             st.session_state.trade_log.append({
-                '날짜': t_date.strftime('%Y-%m-%d'),
-                '종목명': t_name,
-                '매수가': t_price,
-                '수량': t_qty,
-                '투자금액': t_price * t_qty,
+                '날짜':      t_date.strftime('%Y-%m-%d'),
+                '종목명':    t_name,
+                '매수가':    t_price,
+                '수량':      t_qty,
+                '투자금액':  t_price * t_qty,
                 '1차익절가': int(t_price * 1.05),
                 '2차익절가': int(t_price * 1.09),
-                '손절가': int(t_price * 0.95),
-                '등급': t_grade,
+                '손절가':    int(t_price * 0.95),
+                '등급':      t_grade,
             })
             st.success(f"{t_name} 기록 추가됨!")
 
@@ -121,13 +157,36 @@ with st.expander("📝 매매 기록 (클릭해서 펼치기)"):
 st.divider()
 
 # ──────────────────────────────────────────────
+# 뉴스 로드 함수
+# ──────────────────────────────────────────────
+def get_stock_news(code, name, n=3):
+    try:
+        query = urllib.parse.quote(name)
+        url = f"https://finance.naver.com/item/news_news.naver?code={code}&page=1&sm=title_entity_id.basic&clusterId="
+        return [
+            {'title': f"{name} 최신 뉴스 보기", 'link': url}
+        ]
+    except:
+        return []
+
+import urllib.parse
+
+def fetch_naver_rss_news(name, n=3):
+    try:
+        query = urllib.parse.quote(name)
+        url = f"https://finance.naver.com/news/news_search.naver?rcdate=&q={query}&sm=title&pageSize={n}&startDate=&endDate="
+        news_url = f"https://search.naver.com/search.naver?where=news&query={query}+주식&sort=1&photo=0&field=0&pd=1"
+        return news_url
+    except:
+        return f"https://finance.naver.com/item/news_news.naver?code={name}"
+
+# ──────────────────────────────────────────────
 # 데이터 로드
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def load_stock_list():
     kospi  = fdr.StockListing('KOSPI')
     kosdaq = fdr.StockListing('KOSDAQ')
-    # 업종 컬럼 추출 (있으면 사용, 없으면 빈값)
     def extract(df):
         cols = ['Code', 'Name', 'Marcap', 'Close']
         if 'Sector' in df.columns:
@@ -188,7 +247,8 @@ def analyze_stock(code, name, marcap, close, sector=''):
         return {'grade': 'watch_high', 'name': name, 'code': code,
                 'close': close_price, 'rsi': round(rsi, 1),
                 'sector': sector, 'reason': '20만원 이상 별도관심',
-                'naver_url': f"https://finance.naver.com/item/main.naver?code={code}"}
+                'naver_url': f"https://finance.naver.com/item/main.naver?code={code}",
+                'news_url':  f"https://search.naver.com/search.naver?where=news&query={urllib.parse.quote(name)}+주식&sort=1"}
 
     if not (30000 <= close_price <= 150000): return None
     if marcap < 300_000_000_000:             return None
@@ -287,11 +347,11 @@ def _make_result(grade, code, name, close, ma5, ma20, rsi,
         'reason':     reason,
         'marcap':     marcap,
         'naver_url':  f"https://finance.naver.com/item/main.naver?code={code}",
-        'news_url':   f"https://finance.naver.com/item/news_news.naver?code={code}",
+        'news_url':   f"https://search.naver.com/search.naver?where=news&query={urllib.parse.quote(name)}+주식&sort=1",
     }
 
 # ──────────────────────────────────────────────
-# 결과 렌더링 헬퍼
+# 결과 렌더링
 # ──────────────────────────────────────────────
 def render_table(df_result, grade):
     d = df_result[df_result['grade'] == grade].copy()
@@ -301,13 +361,12 @@ def render_table(df_result, grade):
 
     cols      = ['name', 'sector', 'code', 'close', 'ma20', 'rsi', 'vol_ratio', 'pullback', 'reason']
     col_names = ['종목명', '업종', '코드', '현재가', '20일선', 'RSI', '거래량비율(%)', '고점대비(%)', '사유']
-    display   = d[cols].rename(columns=dict(zip(cols, col_names)))
-    st.dataframe(display, use_container_width=True)
+    st.dataframe(d[cols].rename(columns=dict(zip(cols, col_names))), use_container_width=True)
 
-    st.markdown("**🔗 네이버 증권 바로가기**")
-    link_cols = st.columns(min(len(d), 6))
+    st.markdown("**🔗 종목별 바로가기**")
+    link_cols = st.columns(min(len(d), 5))
     for i, (_, row) in enumerate(d.iterrows()):
-        with link_cols[i % 6]:
+        with link_cols[i % 5]:
             st.markdown(f"[{row['name']} 차트]({row['naver_url']})")
             st.markdown(f"[{row['name']} 뉴스]({row['news_url']})")
 
@@ -323,10 +382,9 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
 
     results    = []
     watch_high = []
-
-    progress = st.progress(0)
-    status   = st.empty()
-    total    = len(stocks)
+    progress   = st.progress(0)
+    status     = st.empty()
+    total      = len(stocks)
 
     for i, row in enumerate(stocks.itertuples()):
         status.text(f"분석 중... {i+1}/{total} - {row.Name}")
@@ -365,11 +423,12 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
             if watch_high:
                 wh = pd.DataFrame(watch_high)
                 st.dataframe(wh[['name','sector','code','close','rsi','reason']], use_container_width=True)
-                st.markdown("**🔗 네이버 증권 바로가기**")
-                wh_cols = st.columns(min(len(wh), 6))
+                st.markdown("**🔗 종목별 바로가기**")
+                wh_cols = st.columns(min(len(wh), 5))
                 for i, (_, row) in enumerate(wh.iterrows()):
-                    with wh_cols[i % 6]:
+                    with wh_cols[i % 5]:
                         st.markdown(f"[{row['name']} 차트]({row['naver_url']})")
+                        st.markdown(f"[{row['name']} 뉴스]({row['news_url']})")
             else:
                 st.info("해당 종목 없음")
     else:
