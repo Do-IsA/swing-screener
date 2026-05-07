@@ -406,7 +406,10 @@ if not df_result.empty:
     with tab5:
         if watch_high:
             wh = pd.DataFrame(watch_high)
-            st.dataframe(wh[['name','code','close','rsi','reason']], use_container_width=True)
+            wh_display = wh[['name','code','close','rsi','reason']].rename(columns={
+                'name': '종목명', 'code': '코드', 'close': '현재가', 'rsi': 'RSI', 'reason': '사유'
+            })
+            st.dataframe(wh_display, use_container_width=True)
             for _, row in wh.iterrows():
                 col1, col2, col3 = st.columns([2,1,1])
                 with col1: st.write(f"**{row['name']}** ({row['code']})")
