@@ -11,6 +11,26 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 
+st.markdown("""
+<style>
+[data-testid="stSidebar"] {
+    font-size: 0.82rem;
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    font-size: 0.95rem !important;
+}
+[data-testid="stSidebar"] .stMetric label {
+    font-size: 0.75rem !important;
+}
+[data-testid="stSidebar"] .stMetric [data-testid="stMetricValue"] {
+    font-size: 0.88rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ──────────────────────────────────────────────
 # 용어 데이터
 # ──────────────────────────────────────────────
@@ -197,7 +217,7 @@ def analyze_stock(code, name, marcap, close):
                 'close': close_price, 'rsi': round(rsi,1),
                 'reason': '20만원 이상 별도관심',
                 'naver_url': f"https://finance.naver.com/item/main.naver?code={code}",
-                'news_url': f"https://search.naver.com/search.naver?where=news&query={urllib.parse.quote(name)}+주식&sort=1",
+                'news_url': f"https://finance.naver.com/item/news_news.naver?code={code}",
                 'buy_recommend': 0, 'tp1': 0, 'tp2': 0, 'sl': 0}
 
     if not (30000 <= close_price <= 150000): return None
@@ -311,7 +331,7 @@ def _make_result(grade, code, name, close, ma5, ma20, rsi,
         'tp2':           int(br * 1.09),
         'sl':            int(br * 0.95),
         'naver_url':     f"https://finance.naver.com/item/main.naver?code={code}",
-        'news_url':      f"https://search.naver.com/search.naver?where=news&query={urllib.parse.quote(name)}+주식&sort=1",
+        'news_url':      f"https://finance.naver.com/item/news_news.naver?code={code}",
     }
 
 # ──────────────────────────────────────────────
