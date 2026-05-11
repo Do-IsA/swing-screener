@@ -498,6 +498,7 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     ])
 
     def show_table(df, cols):
+
     if df.empty:
         st.write("해당 종목 없음")
         return
@@ -517,7 +518,9 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
 
     # 모바일 친화 카드뷰
     for _, row in df.iterrows():
+
         with st.container(border=True):
+
             st.markdown(f"### {row['name']} ({row['code']})")
 
             if "original_grade" in row and pd.notna(row.get("original_grade")):
@@ -537,9 +540,11 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
             st.divider()
 
             col1, col2 = st.columns(2)
+
             with col1:
                 st.metric("RSI", row.get("rsi", "-"))
                 st.metric("고점대비", f"{row.get('pullback', '-')}%")
+
             with col2:
                 st.metric("거래량비율", f"{row.get('vol_ratio', '-')}%")
                 st.metric("20일선", f"{int(row.get('ma20', 0)):,}원")
