@@ -36,6 +36,12 @@ st.sidebar.write(f"추가 매수 (20%): **{int(seed * 0.2):,}원**")
 st.sidebar.write(f"최대 비중 (50%): **{int(seed * 0.5):,}원**")
 st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
 
+view_mode = st.sidebar.radio(
+    "보기 방식",
+    ["카드뷰", "표뷰"],
+    index=0
+)
+
 st.sidebar.divider()
 use_sector = st.sidebar.checkbox("섹터 정보 표시", value=True)
 
@@ -492,12 +498,13 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     ])
 
     def show_table(df, cols):
-        if df.empty:
-            st.write("해당 종목 없음")
-            return
+    if df.empty:
+        st.write("해당 종목 없음")
+        return
 
-        display_df = df[cols].rename(columns=col_names)
+    display_df = df[cols].rename(columns=col_names)
 
+    if view_mode == "표뷰":
         st.dataframe(
             display_df,
             use_container_width=True,
@@ -506,6 +513,40 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
                 "뉴스": st.column_config.LinkColumn("뉴스", display_text="뉴스 보기"),
             }
         )
+        return
+
+    # 모바일 친화 카드뷰
+    for _, row in df.iterrows():
+        with st.container(border=True):
+            st.markdown(f"### {row['name']} ({row['code']})")
+
+            if "original_grade" in row and pd.notna(row.get("original_grade")):
+                st.caption(f"원래등급: {row['original_grade']}")
+
+            st.write(f"**섹터**: {row.get('sector', '-')}")
+            st.write(f"**현재가**: {int(row['close']):,}원")
+            st.write(f"**유형**: {row.get('trade_type', '-')}")
+            st.write(f"**사유**: {row.get('reason', '-')}")
+
+            st.divider()
+
+            st.write(f"**매수구간**: {row.get('buy_zone', '-')}")
+            st.write(f"**손절가**: {row.get('stop_loss', '-')}")
+            st.write(f"**전략**: {row.get('strategy', '-')}")
+
+            st.divider()
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("RSI", row.get("rsi", "-"))
+                st.metric("고점대비", f"{row.get('pullback', '-')}%")
+            with col2:
+                st.metric("거래량비율", f"{row.get('vol_ratio', '-')}%")
+                st.metric("20일선", f"{int(row.get('ma20', 0)):,}원")
+
+            st.markdown(
+                f"[차트 보기]({row['chart']})  |  [뉴스 보기]({row['news']})"
+            )
 
     with tab1:
         if not df_result.empty:
