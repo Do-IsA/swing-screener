@@ -229,8 +229,23 @@ def analyze_stock(code, name, marcap, sector="-"):
     df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    # =========================
+    # 장중에는 전날 봉 기준 사용
+    # =========================
+
+    now = datetime.now()
+    
+    market_closed = (
+        now.hour > 15 or
+        (now.hour == 15 and now.minute >= 30)
+    )
+    
+    if market_closed:
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+    else:
+        latest = df.iloc[-2]
+        prev = df.iloc[-3]
 
     close_price = latest["Close"]
     ma5 = latest["ma5"]
