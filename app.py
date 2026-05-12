@@ -343,8 +343,15 @@ def analyze_stock(
         window=14
     ).rsi()
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    # 장중이면 전날 봉 사용
+    now = datetime.now()
+
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        latest = df.iloc[-2]
+        prev = df.iloc[-3]
+    else:
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
 
     close_price = latest["Close"]
 
