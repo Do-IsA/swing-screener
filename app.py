@@ -15,22 +15,16 @@ except Exception:
     ZoneInfo = None
 
 
-# =========================
-# 페이지 설정
-# =========================
-
-st.set_page_config(
-    page_title="스윙 종목 스크리너",
-    layout="wide"
-)
-
+st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 st.title("📈 스윙 종목 스크리너")
-st.caption(f"기준일: {datetime.today().strftime('%Y-%m-%d')}")
 
+def get_kst_now():
+    if ZoneInfo:
+        return datetime.now(ZoneInfo("Asia/Seoul"))
+    return datetime.now()
 
-# =========================
-# 설정값
-# =========================
+now_kst = get_kst_now()
+st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
 
 PRICE_MIN = 30_000
 HIGH_PRICE_THRESHOLD = 200_000
@@ -70,6 +64,20 @@ use_sector = st.sidebar.checkbox(
     value=True
 )
 
+st.sidebar.divider()
+
+favorite_input = st.sidebar.text_area(
+    "⭐ 관심종목 코드",
+    value="",
+    placeholder="예: 005930,000660,319660"
+)
+
+favorite_codes = {
+    code.strip()
+    for code in favorite_input.replace("\n", ",").split(",")
+    if code.strip()
+}
+
 
 # =========================
 # 데이터 로드
@@ -77,9 +85,23 @@ use_sector = st.sidebar.checkbox(
 
 @st.cache_data(ttl=3600)
 def load_stock_list():
-    kospi = fdr.StockListing("KOSPI")[["Code", "Name", "Marcap", "Close"]]
-    kosdaq = fdr.StockListing("KOSDAQ")[["Code", "Name", "Marcap", "Close"]]
-    return pd.concat([kospi, kosdaq], ignore_index=True)
+    frames = []
+
+    for market in ["KOSPI", "KOSDAQ"]:
+        try:
+            df = fdr.StockListing(market)
+            required_cols = ["Code", "Name", "Marcap", "Close"]
+
+            if all(col in df.columns for col in required_cols):
+                frames.append(df[required_cols])
+
+        except Exception as e:
+            st.warning(f"{market} 종목 리스트를 불러오지 못했습니다: {e}")
+
+    if not frames:
+        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+
+    return pd.concat(frames, ignore_index=True)
 
 
 @st.cache_data(ttl=3600)
@@ -96,7 +118,7 @@ def load_sector_map():
         from pykrx import stock
 
         sector_map = {}
-        date = datetime.today().strftime("%Y%m%d")
+        date = get_kst_now().strftime("%Y%m%d")
 
         for market in ["KOSPI", "KOSDAQ"]:
             try:
@@ -129,12 +151,6 @@ def load_sector_map():
 # 유틸 함수
 # =========================
 
-def get_kst_now():
-    if ZoneInfo:
-        return datetime.now(ZoneInfo("Asia/Seoul"))
-    return datetime.now()
-
-
 def make_urls(code, name):
     chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
     news_url = (
@@ -142,6 +158,24 @@ def make_urls(code, name):
         f"where=news&query={quote(name)}"
     )
     return chart_url, news_url
+
+
+def fmt_price(value):
+    try:
+        if pd.isna(value):
+            return "-"
+        return f"{int(value):,}원"
+    except Exception:
+        return "-"
+
+
+def fmt_number(value):
+    try:
+        if pd.isna(value):
+            return "-"
+        return f"{int(value):,}"
+    except Exception:
+        return "-"
 
 
 def calc_buy_zone(trade_type, close_price, ma20, high_10d):
@@ -232,7 +266,7 @@ def make_result(
 # =========================
 
 def analyze_stock(code, name, marcap, sector="-"):
-    start = (datetime.today() - timedelta(days=160)).strftime("%Y-%m-%d")
+    start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
     df = load_ohlcv(code, start)
 
     if df is None or len(df) < 80:
@@ -248,7 +282,7 @@ def analyze_stock(code, name, marcap, sector="-"):
     # =========================
     # 00:00~13:59 : 전날 완성봉 기준
     # 14:00 이후 : 당일봉 기준
-    # 15:30 이후 : 당일 종가봉 기준처럼 사용
+    # 15:30 이후 : 당일 종가 기준처럼 사용
 
     now = get_kst_now()
 
@@ -295,6 +329,7 @@ def analyze_stock(code, name, marcap, sector="-"):
         volume_20avg = df["Volume"].iloc[latest_pos - 20:latest_pos].mean()
 
         trade_amount_today = close_price * volume_today
+
         trade_amount_20avg = (
             df["Close"] * df["Volume"]
         ).iloc[latest_pos - 20:latest_pos].mean()
@@ -306,10 +341,7 @@ def analyze_stock(code, name, marcap, sector="-"):
     except Exception:
         return None
 
-    # =========================
     # 기본 필터
-    # =========================
-
     if close_price < PRICE_MIN:
         return None
 
@@ -328,10 +360,7 @@ def analyze_stock(code, name, marcap, sector="-"):
     ):
         return None
 
-    # =========================
     # 과열/위험 제외
-    # =========================
-
     try:
         surge_3d = (
             (close_price - df["Close"].iloc[latest_pos - 3])
@@ -361,20 +390,14 @@ def analyze_stock(code, name, marcap, sector="-"):
     if prev_body >= 3 and today_change < 2:
         return None
 
-    # =========================
     # 추세 조건
-    # =========================
-
     trend_ok = (
         close_price > ma20
         and ma20 > ma60
         and ma60 > ma60_5ago
     )
 
-    # =========================
     # 눌림 조건
-    # =========================
-
     try:
         high_20d = df["High"].iloc[latest_pos - 20:latest_pos].max()
         pullback_pct = (close_price - high_20d) / high_20d * 100
@@ -397,10 +420,7 @@ def analyze_stock(code, name, marcap, sector="-"):
         and vol_decrease
     )
 
-    # =========================
     # entry A: 눌림 후 재상승
-    # =========================
-
     entry_a = (
         trend_ok
         and pullback_ok
@@ -411,10 +431,7 @@ def analyze_stock(code, name, marcap, sector="-"):
         and close_price > ma20
     )
 
-    # =========================
     # entry B: 박스권 돌파
-    # =========================
-
     try:
         high_10d = df["High"].iloc[latest_pos - 10:latest_pos].max()
         vol_ratio = volume_today / volume_5avg * 100 if volume_5avg > 0 else 0
@@ -437,10 +454,7 @@ def analyze_stock(code, name, marcap, sector="-"):
         and close_price <= ma20 * 1.18
     )
 
-    # =========================
     # 등급 결정
-    # =========================
-
     if entry_a:
         grade = "A"
         trade_type = "눌림형"
@@ -483,10 +497,7 @@ def analyze_stock(code, name, marcap, sector="-"):
         recent_low
     )
 
-    # =========================
     # 20만원 이상 별도관심
-    # =========================
-
     if close_price >= HIGH_PRICE_THRESHOLD:
         return make_result(
             grade="watch_high",
@@ -561,31 +572,36 @@ def show_table(df, cols):
         return
 
     for _, row in df.iterrows():
+        is_favorite = row.get("code") in favorite_codes
+        star = "⭐ " if is_favorite else ""
+
         with st.container(border=True):
-            st.markdown(f"### {row['name']} ({row['code']})")
+            st.markdown(f"### {star}{row.get('name', '-')} ({row.get('code', '-')})")
 
             if row.get("grade") == "watch_high":
                 st.caption(f"원래등급: {row.get('original_grade', '-')}")
 
             st.markdown(f"**유형:** {row.get('trade_type', '-')}")
-            st.markdown(f"**현재가:** {int(row['close']):,}원")
+            st.markdown(f"**현재가:** {fmt_price(row.get('close'))}")
             st.markdown(f"**매수구간:** {row.get('buy_zone', '-')}")
             st.markdown(f"**손절가:** {row.get('stop_loss', '-')}")
             st.markdown(f"**사유:** {row.get('reason', '-')}")
 
             st.markdown(
-                f"[📈 차트 보기]({row['chart']})  |  [📰 뉴스 보기]({row['news']})"
+                f"[📈 차트 보기]({row.get('chart', '')})"
+                f"  |  "
+                f"[📰 뉴스 보기]({row.get('news', '')})"
             )
 
             with st.expander("📊 상세 정보 보기"):
                 st.write(f"**섹터:** {row.get('sector', '-')}")
                 st.write(f"**전략:** {row.get('strategy', '-')}")
-                st.write(f"**20일선:** {int(row.get('ma20', 0)):,}원")
-                st.write(f"**5일선:** {int(row.get('ma5', 0)):,}원")
+                st.write(f"**20일선:** {fmt_price(row.get('ma20'))}")
+                st.write(f"**5일선:** {fmt_price(row.get('ma5'))}")
                 st.write(f"**RSI:** {row.get('rsi', '-')}")
                 st.write(f"**거래량비율:** {row.get('vol_ratio', '-')}%")
                 st.write(f"**고점대비:** {row.get('pullback', '-')}%")
-                st.write(f"**시가총액:** {int(row.get('marcap', 0)):,}원")
+                st.write(f"**시가총액:** {fmt_number(row.get('marcap'))}원")
 
 
 # =========================
@@ -596,6 +612,10 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
 
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks = load_stock_list()
+
+    if stocks.empty:
+        st.error("종목 리스트를 불러오지 못했습니다. 잠시 후 다시 실행해 주세요.")
+        st.stop()
 
     sector_map = {}
 
