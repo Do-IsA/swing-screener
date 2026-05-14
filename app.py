@@ -1,6 +1,7 @@
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
+from pykrx import stock
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
 from datetime import datetime, timedelta
@@ -15,13 +16,19 @@ except Exception:
     ZoneInfo = None
 
 
+# =========================
+# 기본 설정
+# =========================
+
 st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 st.title("📈 스윙 종목 스크리너")
+
 
 def get_kst_now():
     if ZoneInfo:
         return datetime.now(ZoneInfo("Asia/Seoul"))
     return datetime.now()
+
 
 now_kst = get_kst_now()
 st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
@@ -40,11 +47,7 @@ TRADE_AMOUNT_TODAY_MIN = 5_000_000_000
 
 st.sidebar.header("💰 시드 계산기")
 
-seed = st.sidebar.number_input(
-    "총 시드 (원)",
-    value=2_000_000,
-    step=100_000
-)
+seed = st.sidebar.number_input("총 시드 (원)", value=2_000_000, step=100_000)
 
 st.sidebar.write(f"1차 매수 (30%): **{int(seed * 0.3):,}원**")
 st.sidebar.write(f"추가 매수 (20%): **{int(seed * 0.2):,}원**")
@@ -53,16 +56,9 @@ st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
 
 st.sidebar.divider()
 
-view_mode = st.sidebar.radio(
-    "보기 방식",
-    ["카드뷰", "표뷰"],
-    index=0
-)
+view_mode = st.sidebar.radio("보기 방식", ["카드뷰", "표뷰"], index=0)
 
-use_sector = st.sidebar.checkbox(
-    "섹터 정보 표시",
-    value=True
-)
+use_sector = st.sidebar.checkbox("섹터 정보 표시", value=True)
 
 st.sidebar.divider()
 
@@ -83,25 +79,80 @@ favorite_codes = {
 # 데이터 로드
 # =========================
 
+def get_krx_base_date():
+    """
+    pykrx는 휴장일/주말 당일 데이터를 못 가져올 수 있으므로
+    최근 10일 안에서 시총 데이터가 존재하는 날짜를 찾는다.
+    """
+    today = get_kst_now().date()
+
+    for i in range(10):
+        target_date = today - timedelta(days=i)
+        date_str = target_date.strftime("%Y%m%d")
+
+        try:
+            df = stock.get_market_cap_by_ticker(date_str, market="ALL")
+            if df is not None and not df.empty:
+                return date_str
+        except Exception:
+            continue
+
+    return today.strftime("%Y%m%d")
+
+
 @st.cache_data(ttl=3600)
 def load_stock_list():
-    frames = []
+    """
+    기존 fdr.StockListing 대신 pykrx 기반으로 종목 리스트 생성.
+    필요한 컬럼은 기존 코드와 동일하게 Code / Name / Marcap / Close 로 맞춘다.
+    """
+    try:
+        date = get_krx_base_date()
 
-    for market in ["KOSPI", "KOSDAQ"]:
-        try:
-            df = fdr.StockListing(market)
-            required_cols = ["Code", "Name", "Marcap", "Close"]
+        cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
 
-            if all(col in df.columns for col in required_cols):
-                frames.append(df[required_cols])
+        if cap_df is None or cap_df.empty:
+            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
 
-        except Exception as e:
-            st.warning(f"{market} 종목 리스트를 불러오지 못했습니다: {e}")
+        cap_df = cap_df.reset_index()
 
-    if not frames:
+        # pykrx 버전에 따라 컬럼명이 티커 또는 index로 들어올 수 있음
+        if "티커" in cap_df.columns:
+            cap_df = cap_df.rename(columns={"티커": "Code"})
+        elif "index" in cap_df.columns:
+            cap_df = cap_df.rename(columns={"index": "Code"})
+
+        rename_map = {
+            "종가": "Close",
+            "시가총액": "Marcap",
+        }
+
+        cap_df = cap_df.rename(columns=rename_map)
+
+        if "Code" not in cap_df.columns:
+            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+
+        cap_df["Code"] = cap_df["Code"].astype(str).str.zfill(6)
+        cap_df["Name"] = cap_df["Code"].apply(stock.get_market_ticker_name)
+
+        required_cols = ["Code", "Name", "Marcap", "Close"]
+
+        if not all(col in cap_df.columns for col in required_cols):
+            return pd.DataFrame(columns=required_cols)
+
+        result = cap_df[required_cols].copy()
+        result = result.dropna(subset=["Code", "Name", "Marcap", "Close"])
+
+        result["Marcap"] = pd.to_numeric(result["Marcap"], errors="coerce")
+        result["Close"] = pd.to_numeric(result["Close"], errors="coerce")
+
+        result = result.dropna(subset=["Marcap", "Close"])
+
+        return result
+
+    except Exception as e:
+        st.warning(f"pykrx 종목 리스트를 불러오지 못했습니다: {e}")
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    return pd.concat(frames, ignore_index=True)
 
 
 @st.cache_data(ttl=3600)
@@ -115,10 +166,8 @@ def load_ohlcv(code, start):
 @st.cache_data(ttl=86400)
 def load_sector_map():
     try:
-        from pykrx import stock
-
         sector_map = {}
-        date = get_kst_now().strftime("%Y%m%d")
+        date = get_krx_base_date()
 
         for market in ["KOSPI", "KOSDAQ"]:
             try:
@@ -129,12 +178,10 @@ def load_sector_map():
             for index_code in index_codes:
                 try:
                     index_name = stock.get_index_ticker_name(index_code)
-                    tickers = stock.get_index_portfolio_deposit_file(
-                        index_code,
-                        date
-                    )
+                    tickers = stock.get_index_portfolio_deposit_file(index_code, date)
 
                     for ticker in tickers:
+                        ticker = str(ticker).zfill(6)
                         if ticker not in sector_map:
                             sector_map[ticker] = index_name
 
@@ -153,10 +200,7 @@ def load_sector_map():
 
 def make_urls(code, name):
     chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
-    news_url = (
-        f"https://search.naver.com/search.naver?"
-        f"where=news&query={quote(name)}"
-    )
+    news_url = f"https://search.naver.com/search.naver?where=news&query={quote(name)}"
     return chart_url, news_url
 
 
@@ -183,17 +227,14 @@ def calc_buy_zone(trade_type, close_price, ma20, high_10d):
         buy_low = ma20 * 0.98
         buy_high = ma20 * 1.02
         strategy = "20일선 근처 눌림 매수"
-
     elif trade_type == "돌파형 안정형":
         buy_low = high_10d * 0.995
         buy_high = high_10d * 1.015
         strategy = "전고점 돌파 후 눌림/재돌파 매수"
-
     elif trade_type == "돌파형 공격형":
         buy_low = high_10d * 0.99
         buy_high = high_10d * 1.02
         strategy = "강한 돌파 후보, 다음날 눌림 확인"
-
     else:
         buy_low = close_price * 0.98
         buy_high = close_price * 1.01
@@ -205,10 +246,8 @@ def calc_buy_zone(trade_type, close_price, ma20, high_10d):
 def calc_stop_loss(trade_type, buy_low, ma20, recent_low):
     if trade_type == "눌림형":
         stop = min(ma20 * 0.97, recent_low * 0.99)
-
     elif trade_type in ["돌파형 안정형", "돌파형 공격형"]:
         stop = min(buy_low * 0.97, recent_low * 0.99)
-
     else:
         stop = recent_low * 0.98
 
@@ -277,13 +316,6 @@ def analyze_stock(code, name, marcap, sector="-"):
     df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
-    # =========================
-    # 기준봉 선택
-    # =========================
-    # 00:00~13:59 : 전날 완성봉 기준
-    # 14:00 이후 : 당일봉 기준
-    # 15:30 이후 : 당일 종가 기준처럼 사용
-
     now = get_kst_now()
 
     use_today_candle = (
@@ -292,11 +324,7 @@ def analyze_stock(code, name, marcap, sector="-"):
     )
 
     try:
-        if use_today_candle:
-            latest_pos = len(df) - 1
-        else:
-            latest_pos = len(df) - 2
-
+        latest_pos = len(df) - 1 if use_today_candle else len(df) - 2
         prev_pos = latest_pos - 1
 
         if latest_pos < 60 or prev_pos < 0:
@@ -304,7 +332,6 @@ def analyze_stock(code, name, marcap, sector="-"):
 
         latest = df.iloc[latest_pos]
         prev = df.iloc[prev_pos]
-
     except Exception:
         return None
 
@@ -319,29 +346,17 @@ def analyze_stock(code, name, marcap, sector="-"):
 
     try:
         ma60_5ago = df.iloc[latest_pos - 5]["ma60"]
-    except Exception:
-        return None
 
-    volume_today = latest["Volume"]
-
-    try:
+        volume_today = latest["Volume"]
         volume_5avg = df["Volume"].iloc[latest_pos - 5:latest_pos].mean()
         volume_20avg = df["Volume"].iloc[latest_pos - 20:latest_pos].mean()
 
         trade_amount_today = close_price * volume_today
-
-        trade_amount_20avg = (
-            df["Close"] * df["Volume"]
-        ).iloc[latest_pos - 20:latest_pos].mean()
-
-        trade_amount_3avg = (
-            df["Close"] * df["Volume"]
-        ).iloc[latest_pos - 3:latest_pos].mean()
-
+        trade_amount_20avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 20:latest_pos].mean()
+        trade_amount_3avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 3:latest_pos].mean()
     except Exception:
         return None
 
-    # 기본 필터
     if close_price < PRICE_MIN:
         return None
 
@@ -360,7 +375,6 @@ def analyze_stock(code, name, marcap, sector="-"):
     ):
         return None
 
-    # 과열/위험 제외
     try:
         surge_3d = (
             (close_price - df["Close"].iloc[latest_pos - 3])
@@ -373,6 +387,8 @@ def analyze_stock(code, name, marcap, sector="-"):
             / prev["Close"]
             * 100
         )
+
+        prev_body = (prev["Open"] - prev["Close"]) / prev["Open"] * 100
     except Exception:
         return None
 
@@ -385,19 +401,15 @@ def analyze_stock(code, name, marcap, sector="-"):
     if today_change >= 25:
         return None
 
-    prev_body = (prev["Open"] - prev["Close"]) / prev["Open"] * 100
-
     if prev_body >= 3 and today_change < 2:
         return None
 
-    # 추세 조건
     trend_ok = (
         close_price > ma20
         and ma20 > ma60
         and ma60 > ma60_5ago
     )
 
-    # 눌림 조건
     try:
         high_20d = df["High"].iloc[latest_pos - 20:latest_pos].max()
         pullback_pct = (close_price - high_20d) / high_20d * 100
@@ -410,6 +422,8 @@ def analyze_stock(code, name, marcap, sector="-"):
         sideways = (recent_high - recent_low) / recent_low * 100 < 8
         vol_decrease = volume_today < volume_20avg
 
+        high_10d = df["High"].iloc[latest_pos - 10:latest_pos].max()
+        vol_ratio = volume_today / volume_5avg * 100 if volume_5avg > 0 else 0
     except Exception:
         return None
 
@@ -420,7 +434,6 @@ def analyze_stock(code, name, marcap, sector="-"):
         and vol_decrease
     )
 
-    # entry A: 눌림 후 재상승
     entry_a = (
         trend_ok
         and pullback_ok
@@ -430,13 +443,6 @@ def analyze_stock(code, name, marcap, sector="-"):
         and 45 <= rsi <= 65
         and close_price > ma20
     )
-
-    # entry B: 박스권 돌파
-    try:
-        high_10d = df["High"].iloc[latest_pos - 10:latest_pos].max()
-        vol_ratio = volume_today / volume_5avg * 100 if volume_5avg > 0 else 0
-    except Exception:
-        return None
 
     entry_b_safe = (
         trend_ok
@@ -454,32 +460,26 @@ def analyze_stock(code, name, marcap, sector="-"):
         and close_price <= ma20 * 1.18
     )
 
-    # 등급 결정
     if entry_a:
         grade = "A"
         trade_type = "눌림형"
         reason = "눌림 후 재상승"
-
     elif entry_b_safe:
         grade = "A"
         trade_type = "돌파형 안정형"
         reason = "박스권 돌파 안정형"
-
     elif entry_b_aggressive and not entry_b_safe:
         grade = "B"
         trade_type = "돌파형 공격형"
         reason = "박스권 돌파 공격형 / 다음날 눌림 확인"
-
     elif trend_ok and pullback_ok:
         grade = "B"
         trade_type = "눌림형"
         reason = "눌림 형성 중 / 거래량 확인 필요"
-
     elif trend_ok:
         grade = "C"
         trade_type = "관심"
         reason = "추세 양호, 차트 형성 중"
-
     else:
         return None
 
@@ -497,7 +497,6 @@ def analyze_stock(code, name, marcap, sector="-"):
         recent_low
     )
 
-    # 20만원 이상 별도관심
     if close_price >= HIGH_PRICE_THRESHOLD:
         return make_result(
             grade="watch_high",
@@ -544,7 +543,7 @@ def analyze_stock(code, name, marcap, sector="-"):
 
 
 # =========================
-# 결과 출력 함수
+# 출력 함수
 # =========================
 
 def show_table(df, cols):
@@ -699,36 +698,24 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
 
     with tab1:
         if not df_result.empty:
-            show_table(
-                df_result[df_result["grade"] == "A"],
-                base_cols
-            )
+            show_table(df_result[df_result["grade"] == "A"], base_cols)
         else:
             st.write("해당 종목 없음")
 
     with tab2:
         if not df_result.empty:
-            show_table(
-                df_result[df_result["grade"] == "B"],
-                base_cols
-            )
+            show_table(df_result[df_result["grade"] == "B"], base_cols)
         else:
             st.write("해당 종목 없음")
 
     with tab3:
         if not df_result.empty:
-            show_table(
-                df_result[df_result["grade"] == "C"],
-                base_cols
-            )
+            show_table(df_result[df_result["grade"] == "C"], base_cols)
         else:
             st.write("해당 종목 없음")
 
     with tab4:
         if not df_watch.empty:
-            show_table(
-                df_watch,
-                watch_cols
-            )
+            show_table(df_watch, watch_cols)
         else:
             st.write("해당 종목 없음")
