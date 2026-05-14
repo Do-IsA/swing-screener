@@ -106,9 +106,14 @@ def load_stock_list():
     기존 fdr.StockListing 대신 pykrx 기반으로 종목 리스트 생성.
     필요한 컬럼은 기존 코드와 동일하게 Code / Name / Marcap / Close 로 맞춘다.
     """
+    date = get_krx_base_date()
+
     cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
 
-    st.write(cap_df.columns)
+    st.write("기준일:", date)
+    st.write("컬럼:", cap_df.columns)
+    st.write(cap_df.head())
+
     st.stop()
     try:
         date = get_krx_base_date()
