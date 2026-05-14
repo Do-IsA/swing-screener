@@ -1,4 +1,8 @@
+streamlit
 finance-datareader
+pykrx
 pandas
 ta
-streamlit
+lxml
+html5lib
+beautifulsoup4
