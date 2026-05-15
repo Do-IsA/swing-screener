@@ -96,120 +96,48 @@ def clean_number(value):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
-    """
-    네이버 금융 시가총액 페이지 기반 종목 리스트 생성.
-    반환:
-    df: Code / Name / Marcap / Close
-    logs: 진단 메시지
-    """
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0 Safari/537.36"
-        ),
-        "Referer": "https://finance.naver.com/",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-
-    frames = []
     logs = []
 
-    markets = {
-        "KOSPI": 0,
-        "KOSDAQ": 1,
-    }
+    try:
+        url = "https://finance.naver.com/sise/sise_market_sum.naver?sosok=0&page=1"
 
-    for market_name, sosok in markets.items():
-        market_frames = []
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
 
-        for page in range(1, 80):
-            url = (
-                "https://finance.naver.com/sise/"
-                f"sise_market_sum.naver?sosok={sosok}&page={page}"
-            )
+        res = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
 
-            try:
-                res = requests.get(url, headers=headers, timeout=10)
-                res.encoding = "euc-kr"
+        logs.append(f"HTTP 상태코드: {res.status_code}")
 
-                if res.status_code != 200:
-                    logs.append(f"{market_name} {page}페이지 HTTP {res.status_code}")
-                    continue
+        res.encoding = "euc-kr"
 
-                soup = BeautifulSoup(res.text, "html.parser")
-                code_map = {}
+        logs.append(f"응답 길이: {len(res.text)}")
 
-                for link in soup.select("a.tltle"):
-                    href = link.get("href", "")
-                    name = link.text.strip()
+        if "시가총액" in res.text:
+            logs.append("네이버 페이지 정상 확인")
 
-                    if "code=" in href:
-                        code_map[name] = href.split("code=")[-1][:6]
+        tables = pd.read_html(res.text)
 
-                if not code_map:
-                    if page == 1:
-                        logs.append(f"{market_name} 1페이지에서 종목코드 링크를 찾지 못했습니다.")
-                    break
+        logs.append(f"테이블 개수: {len(tables)}")
 
-                tables = pd.read_html(res.text)
-                target_df = None
+        for i, table in enumerate(tables):
 
-                for table in tables:
-                    cols = [str(c) for c in table.columns]
+            cols = [str(c) for c in table.columns]
 
-                    if "종목명" in cols and "현재가" in cols and "시가총액" in cols:
-                        target_df = table.copy()
-                        break
+            logs.append(f"테이블 {i}: {cols[:5]}")
 
-                if target_df is None:
-                    logs.append(f"{market_name} {page}페이지에서 시가총액 테이블을 찾지 못했습니다.")
-                    continue
+        return pd.DataFrame(), logs
 
-                target_df = target_df.dropna(subset=["종목명"])
+    except Exception as e:
 
-                if target_df.empty:
-                    continue
+        logs.append(f"에러 발생: {e}")
 
-                target_df["Code"] = target_df["종목명"].map(code_map)
-                target_df["Name"] = target_df["종목명"]
-
-                target_df["Close"] = target_df["현재가"].apply(clean_number)
-
-                # 네이버 시가총액 단위: 억원
-                target_df["Marcap"] = target_df["시가총액"].apply(clean_number) * 100_000_000
-
-                result = target_df[["Code", "Name", "Marcap", "Close"]].copy()
-                result = result.dropna(subset=["Code", "Name", "Marcap", "Close"])
-
-                if result.empty:
-                    continue
-
-                result["Code"] = result["Code"].astype(str).str.zfill(6)
-                market_frames.append(result)
-
-            except Exception as e:
-                logs.append(f"{market_name} {page}페이지 로딩 실패: {e}")
-                continue
-
-        if market_frames:
-            market_df = pd.concat(market_frames, ignore_index=True)
-            frames.append(market_df)
-            logs.append(f"{market_name}: {len(market_df)}개 로딩")
-        else:
-            logs.append(f"{market_name}: 로딩된 종목 없음")
-
-    if not frames:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
-
-    result_df = pd.concat(frames, ignore_index=True)
-    result_df = result_df.drop_duplicates(subset=["Code"])
-    result_df = result_df.reset_index(drop=True)
-
-    logs.append(f"전체 종목 수: {len(result_df)}개")
-
-    return result_df, logs
+        return pd.DataFrame(), logs
 
 
 # =========================
@@ -604,9 +532,10 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
 
-    with st.expander("종목 리스트 로딩 로그"):
-        for log in load_logs:
-            st.write(log)
+    st.subheader("종목 리스트 로딩 로그")
+
+    for log in load_logs:
+        st.write(log)
 
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
