@@ -707,11 +707,12 @@ def show_table(df, cols):
         return
 
     for _, row in df.iterrows():
-        is_favorite = row.get("code") in favorite_codes
+        row_code = str(row.get("code")).zfill(6)
+        is_favorite = row_code in favorite_codes
         star = "⭐ " if is_favorite else ""
 
         with st.container(border=True):
-            st.markdown(f"### {star}{row.get('name', '-')} ({row.get('code', '-')})")
+            st.markdown(f"### {star}{row.get('name', '-')} ({row_code})")
 
             if row.get("grade") == "watch_high":
                 st.caption(f"원래등급: {row.get('original_grade', '-')}")
@@ -844,6 +845,7 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         "🔵 B등급 대기/눌림확인",
         "🟡 C등급 관심",
         "👀 20만원↑ 별도관심",
+        "⭐ 관심종목",
     ])
 
     with tab1:
@@ -869,3 +871,21 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
             show_table(df_watch, watch_cols)
         else:
             st.write("해당 종목 없음")
+    with tab5:
+        favorite_all = pd.concat(
+            [df_result, df_watch],
+            ignore_index=True
+        )
+    
+        if not favorite_all.empty and favorite_codes:
+            favorite_all["code"] = favorite_all["code"].astype(str).str.zfill(6)
+            favorite_df = favorite_all[
+                favorite_all["code"].isin(favorite_codes)
+            ]
+    
+            show_table(
+                favorite_df,
+                watch_cols if not favorite_df.empty and "original_grade" in favorite_df.columns else base_cols
+            )
+        else:
+            st.write("관심종목 코드가 없거나, 오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
