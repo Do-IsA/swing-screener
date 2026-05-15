@@ -1,8 +1,8 @@
 streamlit
 finance-datareader
-pykrx
 pandas
 ta
+requests
+beautifulsoup4
 lxml
 html5lib
-beautifulsoup4
