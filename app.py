@@ -604,9 +604,13 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
 
-    with st.expander("종목 리스트 로딩 로그"):
+    st.subheader("종목 리스트 로딩 로그")
+
+    if load_logs:
         for log in load_logs:
             st.write(log)
+    else:
+        st.write("로딩 로그가 비어 있습니다.")
 
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
