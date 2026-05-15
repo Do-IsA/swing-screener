@@ -81,8 +81,8 @@ favorite_codes = {
 
 def get_krx_base_date():
     """
-    pykrx는 휴장일/주말 당일 데이터를 못 가져올 수 있으므로
-    최근 10일 안에서 시총 데이터가 존재하는 날짜를 찾는다.
+    최근 10일 중 pykrx 시가총액 데이터가 정상적으로 불러와지는 날짜를 찾는다.
+    market='ALL'은 Streamlit Cloud에서 오류가 날 수 있어 사용하지 않는다.
     """
     today = get_kst_now().date()
 
@@ -90,12 +90,18 @@ def get_krx_base_date():
         target_date = today - timedelta(days=i)
         date_str = target_date.strftime("%Y%m%d")
 
-        try:
-            df = stock.get_market_cap_by_ticker(date_str, market="ALL")
-            if df is not None and not df.empty:
-                return date_str
-        except Exception:
-            continue
+        for market in ["KOSPI", "KOSDAQ"]:
+            try:
+                df = stock.get_market_cap_by_ticker(
+                    date_str,
+                    market=market
+                )
+
+                if df is not None and not df.empty:
+                    return date_str
+
+            except Exception:
+                continue
 
     return today.strftime("%Y%m%d")
 
@@ -103,65 +109,79 @@ def get_krx_base_date():
 @st.cache_data(ttl=3600)
 def load_stock_list():
     """
-    기존 fdr.StockListing 대신 pykrx 기반으로 종목 리스트 생성.
-    필요한 컬럼은 기존 코드와 동일하게 Code / Name / Marcap / Close 로 맞춘다.
+    KOSPI / KOSDAQ 시가총액 데이터를 각각 불러와서 종목 리스트 생성.
+    기존 fdr.StockListing() 대신 pykrx 사용.
     """
+    frames = []
     date = get_krx_base_date()
 
-    cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
+    for market in ["KOSPI", "KOSDAQ"]:
+        try:
+            cap_df = stock.get_market_cap_by_ticker(
+                date,
+                market=market
+            )
 
-    st.write("기준일:", date)
-    st.write("컬럼:", cap_df.columns)
-    st.write(cap_df.head())
+            if cap_df is None or cap_df.empty:
+                st.warning(f"{market} 시가총액 데이터가 비어 있습니다.")
+                continue
 
-    st.stop()
-    try:
-        date = get_krx_base_date()
+            cap_df = cap_df.reset_index()
 
-        cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
+            # pykrx 버전에 따라 티커 컬럼명이 다를 수 있음
+            if "티커" in cap_df.columns:
+                cap_df = cap_df.rename(columns={"티커": "Code"})
+            elif "index" in cap_df.columns:
+                cap_df = cap_df.rename(columns={"index": "Code"})
 
-        if cap_df is None or cap_df.empty:
-            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+            cap_df = cap_df.rename(
+                columns={
+                    "종가": "Close",
+                    "시가총액": "Marcap",
+                }
+            )
 
-        cap_df = cap_df.reset_index()
+            required_cols = ["Code", "Close", "Marcap"]
 
-        # pykrx 버전에 따라 컬럼명이 티커 또는 index로 들어올 수 있음
-        if "티커" in cap_df.columns:
-            cap_df = cap_df.rename(columns={"티커": "Code"})
-        elif "index" in cap_df.columns:
-            cap_df = cap_df.rename(columns={"index": "Code"})
+            if not all(col in cap_df.columns for col in required_cols):
+                st.warning(
+                    f"{market} 시총 데이터 컬럼 확인 필요: {list(cap_df.columns)}"
+                )
+                continue
 
-        rename_map = {
-            "종가": "Close",
-            "시가총액": "Marcap",
-        }
+            cap_df["Code"] = cap_df["Code"].astype(str).str.zfill(6)
+            cap_df["Name"] = cap_df["Code"].apply(
+                stock.get_market_ticker_name
+            )
 
-        cap_df = cap_df.rename(columns=rename_map)
+            result = cap_df[["Code", "Name", "Marcap", "Close"]].copy()
 
-        if "Code" not in cap_df.columns:
-            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+            result["Marcap"] = pd.to_numeric(
+                result["Marcap"],
+                errors="coerce"
+            )
 
-        cap_df["Code"] = cap_df["Code"].astype(str).str.zfill(6)
-        cap_df["Name"] = cap_df["Code"].apply(stock.get_market_ticker_name)
+            result["Close"] = pd.to_numeric(
+                result["Close"],
+                errors="coerce"
+            )
 
-        required_cols = ["Code", "Name", "Marcap", "Close"]
+            result = result.dropna(
+                subset=["Code", "Name", "Marcap", "Close"]
+            )
 
-        if not all(col in cap_df.columns for col in required_cols):
-            return pd.DataFrame(columns=required_cols)
+            frames.append(result)
 
-        result = cap_df[required_cols].copy()
-        result = result.dropna(subset=["Code", "Name", "Marcap", "Close"])
+        except Exception as e:
+            st.warning(f"{market} 종목 리스트 로딩 실패: {e}")
+            continue
 
-        result["Marcap"] = pd.to_numeric(result["Marcap"], errors="coerce")
-        result["Close"] = pd.to_numeric(result["Close"], errors="coerce")
+    if not frames:
+        return pd.DataFrame(
+            columns=["Code", "Name", "Marcap", "Close"]
+        )
 
-        result = result.dropna(subset=["Marcap", "Close"])
-
-        return result
-
-    except Exception as e:
-        st.warning(f"pykrx 종목 리스트를 불러오지 못했습니다: {e}")
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+    return pd.concat(frames, ignore_index=True)
 
 
 @st.cache_data(ttl=3600)
