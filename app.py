@@ -11,6 +11,7 @@ from ta.trend import SMAIndicator
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from io import StringIO
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
@@ -19,6 +20,10 @@ try:
 except Exception:
     ZoneInfo = None
 
+
+# =========================
+# 기본 설정
+# =========================
 
 st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 st.title("📈 스윙 종목 스크리너")
@@ -31,24 +36,46 @@ def get_kst_now():
 
 
 now_kst = get_kst_now()
-st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
+today_str = now_kst.strftime("%Y-%m-%d")
 
-PRICE_MIN = 30000
-HIGH_PRICE_THRESHOLD = 200000
+st.caption(f"기준일: {today_str} / KST {now_kst.strftime('%H:%M')}")
+
+PRICE_MIN = 30_000
+HIGH_PRICE_THRESHOLD = 200_000
+
 MARCAP_MIN = 300_000_000_000
 TRADE_AMOUNT_20AVG_MIN = 10_000_000_000
 TRADE_AMOUNT_TODAY_MIN = 5_000_000_000
 
+DATA_DIR = Path("data")
+HISTORY_FILE = DATA_DIR / "screening_history.csv"
+
+
+# =========================
+# 사이드바
+# =========================
 
 st.sidebar.header("💰 시드 계산기")
-seed = st.sidebar.number_input("총 시드 (원)", value=2_000_000, step=100_000)
+
+seed = st.sidebar.number_input(
+    "총 시드 (원)",
+    value=2_000_000,
+    step=100_000
+)
+
 st.sidebar.write(f"1차 매수 (30%): **{int(seed * 0.3):,}원**")
 st.sidebar.write(f"추가 매수 (20%): **{int(seed * 0.2):,}원**")
 st.sidebar.write(f"최대 비중 (50%): **{int(seed * 0.5):,}원**")
 st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
+
 st.sidebar.divider()
 
-view_mode = st.sidebar.radio("보기 방식", ["카드뷰", "표뷰"], index=0)
+view_mode = st.sidebar.radio(
+    "보기 방식",
+    ["카드뷰", "표뷰"],
+    index=0
+)
+
 st.sidebar.divider()
 
 favorite_input = st.sidebar.text_area(
@@ -56,12 +83,26 @@ favorite_input = st.sidebar.text_area(
     value="",
     placeholder="예: 005930,000660,319660"
 )
-favorite_codes = {c.strip() for c in favorite_input.replace("\n", ",").split(",") if c.strip()}
 
+favorite_codes = {
+    code.strip()
+    for code in favorite_input.replace("\n", ",").split(",")
+    if code.strip()
+}
+
+st.sidebar.caption("관심종목은 저장소 없이 입력값 기준으로 ⭐ 표시됩니다.")
+
+
+# =========================
+# 종목 리스트
+# =========================
 
 def clean_number(value):
     try:
-        text = str(value).strip().replace(",", "").replace("+", "").replace("-", "")
+        text = str(value).strip()
+        text = text.replace(",", "")
+        text = text.replace("+", "")
+        text = text.replace("-", "")
         return pd.to_numeric(text, errors="coerce")
     except Exception:
         return pd.NA
@@ -74,6 +115,7 @@ def parse_naver_market_sum_html(html_text):
     for link in soup.select("a.tltle"):
         href = link.get("href", "")
         name = link.text.strip()
+
         if "code=" in href:
             code_map[name] = href.split("code=")[-1][:6]
 
@@ -85,6 +127,7 @@ def parse_naver_market_sum_html(html_text):
 
     for table in tables:
         cols = [str(c) for c in table.columns]
+
         if "종목명" in cols and "현재가" in cols and "시가총액" in cols:
             target_df = table.copy()
             break
@@ -93,16 +136,23 @@ def parse_naver_market_sum_html(html_text):
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
 
     target_df = target_df.dropna(subset=["종목명"])
+
     if target_df.empty:
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
 
     target_df["Code"] = target_df["종목명"].map(code_map)
     target_df["Name"] = target_df["종목명"]
     target_df["Close"] = target_df["현재가"].apply(clean_number)
+
+    # 네이버 시가총액 단위: 억원
     target_df["Marcap"] = target_df["시가총액"].apply(clean_number) * 100_000_000
 
     result = target_df[["Code", "Name", "Marcap", "Close"]].copy()
     result = result.dropna(subset=["Code", "Name", "Marcap", "Close"])
+
+    if result.empty:
+        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+
     result["Code"] = result["Code"].astype(str).str.zfill(6)
 
     return result.reset_index(drop=True)
@@ -111,20 +161,31 @@ def parse_naver_market_sum_html(html_text):
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
         "Referer": "https://finance.naver.com/",
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     }
 
     frames = []
     logs = []
-    markets = {"KOSPI": 0, "KOSDAQ": 1}
+
+    markets = {
+        "KOSPI": 0,
+        "KOSDAQ": 1,
+    }
 
     for market_name, sosok in markets.items():
         market_frames = []
 
         for page in range(1, 80):
-            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+            url = (
+                "https://finance.naver.com/sise/"
+                f"sise_market_sum.naver?sosok={sosok}&page={page}"
+            )
 
             try:
                 res = requests.get(url, headers=headers, timeout=10)
@@ -158,11 +219,17 @@ def load_stock_list():
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
 
     result_df = pd.concat(frames, ignore_index=True)
-    result_df = result_df.drop_duplicates(subset=["Code"]).reset_index(drop=True)
+    result_df = result_df.drop_duplicates(subset=["Code"])
+    result_df = result_df.reset_index(drop=True)
+
     logs.append(f"전체 종목 수: {len(result_df)}개")
 
     return result_df, logs
 
+
+# =========================
+# OHLCV
+# =========================
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_ohlcv(code, start):
@@ -171,6 +238,135 @@ def load_ohlcv(code, start):
     except Exception:
         return None
 
+
+# =========================
+# 기록 저장 / 비교
+# =========================
+
+def load_history():
+    if not HISTORY_FILE.exists():
+        return pd.DataFrame(
+            columns=[
+                "date", "code", "name", "grade", "screen_grade",
+                "trade_type", "close"
+            ]
+        )
+
+    try:
+        hist = pd.read_csv(HISTORY_FILE, dtype={"code": str})
+        hist["code"] = hist["code"].astype(str).str.zfill(6)
+        return hist
+    except Exception:
+        return pd.DataFrame(
+            columns=[
+                "date", "code", "name", "grade", "screen_grade",
+                "trade_type", "close"
+            ]
+        )
+
+
+def get_effective_grade(row):
+    grade = row.get("grade", "-")
+    original_grade = row.get("original_grade", grade)
+
+    if grade == "watch_high":
+        return original_grade
+
+    return grade
+
+
+def enrich_with_history(current_df, history_df):
+    if current_df.empty:
+        return current_df
+
+    result = current_df.copy()
+    result["code"] = result["code"].astype(str).str.zfill(6)
+
+    if history_df.empty:
+        result["recent_5_count"] = 1
+        result["prev_grade"] = "-"
+        result["grade_change"] = "신규"
+        return result
+
+    history_df = history_df.copy()
+    history_df["code"] = history_df["code"].astype(str).str.zfill(6)
+
+    unique_dates = sorted(history_df["date"].dropna().unique())
+    recent_dates = unique_dates[-5:]
+
+    recent_hist = history_df[history_df["date"].isin(recent_dates)]
+    recent_count_map = recent_hist.groupby("code")["date"].nunique().to_dict()
+
+    prev_date = unique_dates[-1] if unique_dates else None
+    prev_grade_map = {}
+
+    if prev_date:
+        prev_df = history_df[history_df["date"] == prev_date]
+        prev_grade_map = dict(zip(prev_df["code"], prev_df["grade"]))
+
+    current_grades = result.apply(get_effective_grade, axis=1)
+
+    recent_counts = []
+    prev_grades = []
+    changes = []
+
+    for code, current_grade in zip(result["code"], current_grades):
+        count = int(recent_count_map.get(code, 0)) + 1
+        prev_grade = prev_grade_map.get(code, "-")
+
+        if prev_grade == "-":
+            change = "신규"
+        elif prev_grade == current_grade:
+            change = "유지"
+        else:
+            change = f"{prev_grade} → {current_grade}"
+
+        recent_counts.append(count)
+        prev_grades.append(prev_grade)
+        changes.append(change)
+
+    result["recent_5_count"] = recent_counts
+    result["prev_grade"] = prev_grades
+    result["grade_change"] = changes
+
+    return result
+
+
+def save_today_history(today_df):
+    if today_df.empty:
+        return
+
+    DATA_DIR.mkdir(exist_ok=True)
+
+    history_df = load_history()
+    history_df = history_df[history_df["date"] != today_str]
+
+    rows = []
+
+    for _, row in today_df.iterrows():
+        screen_grade = row.get("grade", "-")
+        effective_grade = get_effective_grade(row)
+
+        rows.append(
+            {
+                "date": today_str,
+                "code": str(row.get("code", "")).zfill(6),
+                "name": row.get("name", ""),
+                "grade": effective_grade,
+                "screen_grade": screen_grade,
+                "trade_type": row.get("trade_type", ""),
+                "close": row.get("close", 0),
+            }
+        )
+
+    today_history = pd.DataFrame(rows)
+    new_history = pd.concat([history_df, today_history], ignore_index=True)
+    new_history.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+
+
+# =========================
+# 유틸 함수
+# =========================
 
 def make_urls(code, name):
     chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
@@ -198,28 +394,63 @@ def fmt_number(value):
 
 def calc_buy_zone(trade_type, close_price, ma20, high_10d):
     if trade_type == "눌림형":
-        return round(ma20 * 0.98), round(ma20 * 1.02), "20일선 근처 눌림 매수"
-    if trade_type == "돌파형 안정형":
-        return round(high_10d * 0.995), round(high_10d * 1.015), "전고점 돌파 후 눌림/재돌파 매수"
-    if trade_type == "돌파형 공격형":
-        return round(high_10d * 0.99), round(high_10d * 1.02), "강한 돌파 후보, 다음날 눌림 확인"
-    return round(close_price * 0.98), round(close_price * 1.01), "관찰"
+        buy_low = ma20 * 0.98
+        buy_high = ma20 * 1.02
+        strategy = "20일선 근처 눌림 매수"
+
+    elif trade_type == "돌파형 안정형":
+        buy_low = high_10d * 0.995
+        buy_high = high_10d * 1.015
+        strategy = "전고점 돌파 후 눌림/재돌파 매수"
+
+    elif trade_type == "돌파형 공격형":
+        buy_low = high_10d * 0.99
+        buy_high = high_10d * 1.02
+        strategy = "강한 돌파 후보, 다음날 눌림 확인"
+
+    else:
+        buy_low = close_price * 0.98
+        buy_high = close_price * 1.01
+        strategy = "관찰"
+
+    return round(buy_low), round(buy_high), strategy
 
 
 def calc_stop_loss(trade_type, buy_low, ma20, recent_low):
     if trade_type == "눌림형":
         stop = min(ma20 * 0.97, recent_low * 0.99)
+
     elif trade_type in ["돌파형 안정형", "돌파형 공격형"]:
         stop = min(buy_low * 0.97, recent_low * 0.99)
+
     else:
         stop = recent_low * 0.98
+
     return round(stop)
 
 
-def make_result(grade, code, name, close_price, ma5, ma20, rsi, volume_today,
-                volume_5avg, reason, marcap, pullback, trade_type,
-                buy_low, buy_high, stop_loss, strategy, original_grade=None):
+def make_result(
+    grade,
+    code,
+    name,
+    close_price,
+    ma5,
+    ma20,
+    rsi,
+    volume_today,
+    volume_5avg,
+    reason,
+    marcap,
+    pullback,
+    trade_type,
+    buy_low,
+    buy_high,
+    stop_loss,
+    strategy,
+    original_grade=None,
+):
     chart_url, news_url = make_urls(code, name)
+
     return {
         "grade": grade,
         "original_grade": original_grade or grade,
@@ -232,8 +463,8 @@ def make_result(grade, code, name, close_price, ma5, ma20, rsi, volume_today,
         "vol_ratio": round(volume_today / volume_5avg * 100, 1) if volume_5avg > 0 else 0,
         "pullback": round(pullback, 1),
         "trade_type": trade_type,
-        "buy_zone": f"{buy_low:,} ~ {buy_high:,}",
-        "stop_loss": f"{stop_loss:,}",
+        "buy_zone": f"{buy_low:,} ~ {buy_high:,}" if buy_low else "-",
+        "stop_loss": f"{stop_loss:,}" if stop_loss else "-",
         "strategy": strategy,
         "reason": reason,
         "chart": chart_url,
@@ -241,6 +472,10 @@ def make_result(grade, code, name, close_price, ma5, ma20, rsi, volume_today,
         "marcap": marcap,
     }
 
+
+# =========================
+# 종목 분석
+# =========================
 
 def analyze_stock(code, name, marcap):
     start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
@@ -255,13 +490,18 @@ def analyze_stock(code, name, marcap):
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
     now = get_kst_now()
+
+    # 00:00~13:59: 전날 완성봉 기준
+    # 14:00 이후: 당일봉 기준
     use_today_candle = now.hour > 14 or (now.hour == 14 and now.minute >= 0)
 
     try:
         latest_pos = len(df) - 1 if use_today_candle else len(df) - 2
         prev_pos = latest_pos - 1
+
         if latest_pos < 60 or prev_pos < 0:
             return None
+
         latest = df.iloc[latest_pos]
         prev = df.iloc[prev_pos]
     except Exception:
@@ -278,9 +518,11 @@ def analyze_stock(code, name, marcap):
 
     try:
         ma60_5ago = df.iloc[latest_pos - 5]["ma60"]
+
         volume_today = latest["Volume"]
         volume_5avg = df["Volume"].iloc[latest_pos - 5:latest_pos].mean()
         volume_20avg = df["Volume"].iloc[latest_pos - 20:latest_pos].mean()
+
         trade_amount_today = close_price * volume_today
         trade_amount_20avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 20:latest_pos].mean()
         trade_amount_3avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 3:latest_pos].mean()
@@ -289,12 +531,16 @@ def analyze_stock(code, name, marcap):
 
     if close_price < PRICE_MIN:
         return None
+
     if marcap < MARCAP_MIN:
         return None
+
     if trade_amount_20avg < TRADE_AMOUNT_20AVG_MIN:
         return None
+
     if trade_amount_today < TRADE_AMOUNT_TODAY_MIN:
         return None
+
     if trade_amount_3avg < trade_amount_20avg * 0.5 and trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN:
         return None
 
@@ -305,8 +551,15 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    if rsi >= 80 or surge_3d >= 25 or today_change >= 25:
+    if rsi >= 80:
         return None
+
+    if surge_3d >= 25:
+        return None
+
+    if today_change >= 25:
+        return None
+
     if prev_body >= 3 and today_change < 2:
         return None
 
@@ -315,11 +568,15 @@ def analyze_stock(code, name, marcap):
     try:
         high_20d = df["High"].iloc[latest_pos - 20:latest_pos].max()
         pullback_pct = ((close_price - high_20d) / high_20d) * 100
+
         near_ma20 = abs(close_price - ma20) / ma20 * 100 < 3
+
         recent_high = df["High"].iloc[latest_pos - 5:latest_pos].max()
         recent_low = df["Low"].iloc[latest_pos - 5:latest_pos].min()
+
         sideways = (recent_high - recent_low) / recent_low * 100 < 8
         vol_decrease = volume_today < volume_20avg
+
         high_10d = df["High"].iloc[latest_pos - 10:latest_pos].max()
         vol_ratio = volume_today / volume_5avg * 100 if volume_5avg > 0 else 0
     except Exception:
@@ -328,29 +585,56 @@ def analyze_stock(code, name, marcap):
     pullback_ok = -20 <= pullback_pct <= -5 and near_ma20 and sideways and vol_decrease
 
     entry_a = (
-        trend_ok and pullback_ok and close_price > prev["Close"] and
-        close_price > ma5 and volume_today > prev["Volume"] and
-        45 <= rsi <= 65 and close_price > ma20
+        trend_ok
+        and pullback_ok
+        and close_price > prev["Close"]
+        and close_price > ma5
+        and volume_today > prev["Volume"]
+        and 45 <= rsi <= 65
+        and close_price > ma20
     )
+
     entry_b_safe = (
-        trend_ok and close_price > high_10d and vol_ratio >= 150 and
-        rsi < 70 and close_price <= ma20 * 1.12
+        trend_ok
+        and close_price > high_10d
+        and vol_ratio >= 150
+        and rsi < 70
+        and close_price <= ma20 * 1.12
     )
+
     entry_b_aggressive = (
-        trend_ok and close_price > high_10d and vol_ratio >= 150 and
-        rsi < 72 and close_price <= ma20 * 1.18
+        trend_ok
+        and close_price > high_10d
+        and vol_ratio >= 150
+        and rsi < 72
+        and close_price <= ma20 * 1.18
     )
 
     if entry_a:
-        grade, trade_type, reason = "A", "눌림형", "눌림 후 재상승"
+        grade = "A"
+        trade_type = "눌림형"
+        reason = "눌림 후 재상승"
+
     elif entry_b_safe:
-        grade, trade_type, reason = "A", "돌파형 안정형", "박스권 돌파 안정형"
+        grade = "A"
+        trade_type = "돌파형 안정형"
+        reason = "박스권 돌파 안정형"
+
     elif entry_b_aggressive and not entry_b_safe:
-        grade, trade_type, reason = "B", "돌파형 공격형", "박스권 돌파 공격형 / 다음날 눌림 확인"
+        grade = "B"
+        trade_type = "돌파형 공격형"
+        reason = "박스권 돌파 공격형 / 다음날 눌림 확인"
+
     elif trend_ok and pullback_ok:
-        grade, trade_type, reason = "B", "눌림형", "눌림 형성 중 / 거래량 확인 필요"
+        grade = "B"
+        trade_type = "눌림형"
+        reason = "눌림 형성 중 / 거래량 확인 필요"
+
     elif trend_ok:
-        grade, trade_type, reason = "C", "관심", "추세 양호, 차트 형성 중"
+        grade = "C"
+        trade_type = "관심"
+        reason = "추세 양호, 차트 형성 중"
+
     else:
         return None
 
@@ -400,6 +684,10 @@ def analyze_stock(code, name, marcap):
     )
 
 
+# =========================
+# 출력
+# =========================
+
 def show_table(df, cols):
     if df.empty:
         st.write("해당 종목 없음")
@@ -419,7 +707,8 @@ def show_table(df, cols):
         return
 
     for _, row in df.iterrows():
-        star = "⭐ " if row.get("code") in favorite_codes else ""
+        is_favorite = row.get("code") in favorite_codes
+        star = "⭐ " if is_favorite else ""
 
         with st.container(border=True):
             st.markdown(f"### {star}{row.get('name', '-')} ({row.get('code', '-')})")
@@ -432,6 +721,8 @@ def show_table(df, cols):
             st.markdown(f"**매수구간:** {row.get('buy_zone', '-')}")
             st.markdown(f"**손절가:** {row.get('stop_loss', '-')}")
             st.markdown(f"**사유:** {row.get('reason', '-')}")
+            st.markdown(f"**최근 5일 등장:** {row.get('recent_5_count', '-')}회")
+            st.markdown(f"**등급 변화:** {row.get('grade_change', '-')}")
 
             st.markdown(
                 f"[📈 차트 보기]({row.get('chart', '')})"
@@ -446,8 +737,13 @@ def show_table(df, cols):
                 st.write(f"**RSI:** {row.get('rsi', '-')}")
                 st.write(f"**거래량비율:** {row.get('vol_ratio', '-')}%")
                 st.write(f"**고점대비:** {row.get('pullback', '-')}%")
+                st.write(f"**이전 등급:** {row.get('prev_grade', '-')}")
                 st.write(f"**시가총액:** {fmt_number(row.get('marcap'))}원")
 
+
+# =========================
+# 실행
+# =========================
 
 if st.button("🔍 종목 스캔 시작", type="primary"):
     with st.spinner("종목 리스트 불러오는 중..."):
@@ -470,6 +766,7 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
 
     results = []
     watch_high = []
+
     progress = st.progress(0)
     status = st.empty()
     total = len(stocks)
@@ -478,7 +775,11 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         status.text(f"분석 중... {i + 1}/{total} - {row.Name}")
         progress.progress((i + 1) / total)
 
-        result = analyze_stock(code=row.Code, name=row.Name, marcap=row.Marcap)
+        result = analyze_stock(
+            code=row.Code,
+            name=row.Name,
+            marcap=row.Marcap,
+        )
 
         if result:
             if result["grade"] == "watch_high":
@@ -491,16 +792,30 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     df_result = pd.DataFrame(results)
     df_watch = pd.DataFrame(watch_high)
 
+    combined_today = pd.concat([df_result, df_watch], ignore_index=True)
+
+    history_df = load_history()
+    combined_today = enrich_with_history(combined_today, history_df)
+    save_today_history(combined_today)
+
+    if not combined_today.empty:
+        df_result = combined_today[combined_today["grade"] != "watch_high"].copy()
+        df_watch = combined_today[combined_today["grade"] == "watch_high"].copy()
+
     base_cols = [
         "name", "code", "close", "ma5", "ma20", "rsi",
         "vol_ratio", "pullback", "trade_type", "buy_zone",
-        "stop_loss", "strategy", "reason", "chart", "news", "marcap"
+        "stop_loss", "recent_5_count", "prev_grade", "grade_change",
+        "strategy", "reason", "chart", "news", "marcap"
     ]
+
     watch_cols = [
         "name", "code", "original_grade", "close", "ma5", "ma20",
         "rsi", "vol_ratio", "pullback", "trade_type", "buy_zone",
-        "stop_loss", "strategy", "reason", "chart", "news", "marcap"
+        "stop_loss", "recent_5_count", "prev_grade", "grade_change",
+        "strategy", "reason", "chart", "news", "marcap"
     ]
+
     col_names = {
         "name": "종목명",
         "code": "코드",
@@ -514,6 +829,9 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         "trade_type": "유형",
         "buy_zone": "매수구간",
         "stop_loss": "손절가",
+        "recent_5_count": "최근5일등장",
+        "prev_grade": "이전등급",
+        "grade_change": "등급변화",
         "strategy": "전략",
         "reason": "사유",
         "chart": "차트",
@@ -529,10 +847,25 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     ])
 
     with tab1:
-        show_table(df_result[df_result["grade"] == "A"], base_cols) if not df_result.empty else st.write("해당 종목 없음")
+        if not df_result.empty:
+            show_table(df_result[df_result["grade"] == "A"], base_cols)
+        else:
+            st.write("해당 종목 없음")
+
     with tab2:
-        show_table(df_result[df_result["grade"] == "B"], base_cols) if not df_result.empty else st.write("해당 종목 없음")
+        if not df_result.empty:
+            show_table(df_result[df_result["grade"] == "B"], base_cols)
+        else:
+            st.write("해당 종목 없음")
+
     with tab3:
-        show_table(df_result[df_result["grade"] == "C"], base_cols) if not df_result.empty else st.write("해당 종목 없음")
+        if not df_result.empty:
+            show_table(df_result[df_result["grade"] == "C"], base_cols)
+        else:
+            st.write("해당 종목 없음")
+
     with tab4:
-        show_table(df_watch, watch_cols) if not df_watch.empty else st.write("해당 종목 없음")
+        if not df_watch.empty:
+            show_table(df_watch, watch_cols)
+        else:
+            st.write("해당 종목 없음")
