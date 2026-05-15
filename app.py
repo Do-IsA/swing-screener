@@ -1,12 +1,17 @@
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
-from pykrx import stock
+import requests
+
+from bs4 import BeautifulSoup
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
+
 from datetime import datetime, timedelta
 from urllib.parse import quote
+
 import warnings
+
 
 warnings.filterwarnings("ignore")
 
@@ -79,109 +84,154 @@ favorite_codes = {
 # 데이터 로드
 # =========================
 
-def get_krx_base_date():
-    """
-    최근 10일 중 pykrx 시가총액 데이터가 정상적으로 불러와지는 날짜를 찾는다.
-    market='ALL'은 Streamlit Cloud에서 오류가 날 수 있어 사용하지 않는다.
-    """
-    today = get_kst_now().date()
-
-    for i in range(10):
-        target_date = today - timedelta(days=i)
-        date_str = target_date.strftime("%Y%m%d")
-
-        for market in ["KOSPI", "KOSDAQ"]:
-            try:
-                df = stock.get_market_cap_by_ticker(
-                    date_str,
-                    market=market
-                )
-
-                if df is not None and not df.empty:
-                    return date_str
-
-            except Exception:
-                continue
-
-    return today.strftime("%Y%m%d")
 
 
 @st.cache_data(ttl=3600)
 def load_stock_list():
-    """
-    KOSPI / KOSDAQ 시가총액 데이터를 각각 불러와서 종목 리스트 생성.
-    기존 fdr.StockListing() 대신 pykrx 사용.
-    """
-    frames = []
-    date = get_krx_base_date()
+"""
+네이버 금융 시가총액 페이지 기반 종목 리스트 생성
+반환 컬럼:
+Code / Name / Marcap / Close
+"""
 
-    for market in ["KOSPI", "KOSDAQ"]:
+```
+headers = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
+}
+
+frames = []
+
+# sosok=0 : 코스피
+# sosok=1 : 코스닥
+markets = {
+    "KOSPI": 0,
+    "KOSDAQ": 1
+}
+
+for market_name, sosok in markets.items():
+
+    market_frames = []
+
+    for page in range(1, 80):
+
+        url = (
+            "https://finance.naver.com/sise/"
+            f"sise_market_sum.naver?sosok={sosok}&page={page}"
+        )
+
         try:
-            cap_df = stock.get_market_cap_by_ticker(
-                date,
-                market=market
+            res = requests.get(
+                url,
+                headers=headers,
+                timeout=10
             )
 
-            if cap_df is None or cap_df.empty:
-                st.warning(f"{market} 시가총액 데이터가 비어 있습니다.")
+            res.encoding = "euc-kr"
+
+            # 네이버 금융 테이블 읽기
+            tables = pd.read_html(res.text)
+
+            target_df = None
+
+            for table in tables:
+                cols = [str(c) for c in table.columns]
+
+                if (
+                    "종목명" in cols
+                    and "현재가" in cols
+                    and "시가총액" in cols
+                ):
+                    target_df = table.copy()
+                    break
+
+            if target_df is None:
                 continue
 
-            cap_df = cap_df.reset_index()
+            target_df = target_df.dropna(subset=["종목명"])
 
-            # pykrx 버전에 따라 티커 컬럼명이 다를 수 있음
-            if "티커" in cap_df.columns:
-                cap_df = cap_df.rename(columns={"티커": "Code"})
-            elif "index" in cap_df.columns:
-                cap_df = cap_df.rename(columns={"index": "Code"})
-
-            cap_df = cap_df.rename(
-                columns={
-                    "종가": "Close",
-                    "시가총액": "Marcap",
-                }
-            )
-
-            required_cols = ["Code", "Close", "Marcap"]
-
-            if not all(col in cap_df.columns for col in required_cols):
-                st.warning(
-                    f"{market} 시총 데이터 컬럼 확인 필요: {list(cap_df.columns)}"
-                )
+            if target_df.empty:
                 continue
 
-            cap_df["Code"] = cap_df["Code"].astype(str).str.zfill(6)
-            cap_df["Name"] = cap_df["Code"].apply(
-                stock.get_market_ticker_name
-            )
+            # 종목코드 추출
+            soup = BeautifulSoup(res.text, "html.parser")
 
-            result = cap_df[["Code", "Name", "Marcap", "Close"]].copy()
+            code_map = {}
 
-            result["Marcap"] = pd.to_numeric(
-                result["Marcap"],
+            for link in soup.select("a.tltle"):
+                href = link.get("href", "")
+                name = link.text.strip()
+
+                if "code=" in href:
+                    code = href.split("code=")[-1][:6]
+                    code_map[name] = code
+
+            target_df["Code"] = target_df["종목명"].map(code_map)
+            target_df["Name"] = target_df["종목명"]
+
+            # 숫자 변환
+            target_df["Close"] = pd.to_numeric(
+                target_df["현재가"],
                 errors="coerce"
             )
 
-            result["Close"] = pd.to_numeric(
-                result["Close"],
-                errors="coerce"
+            # 네이버 시총 단위: 억원
+            target_df["Marcap"] = (
+                pd.to_numeric(
+                    target_df["시가총액"],
+                    errors="coerce"
+                ) * 100_000_000
             )
+
+            result = target_df[
+                ["Code", "Name", "Marcap", "Close"]
+            ].copy()
 
             result = result.dropna(
                 subset=["Code", "Name", "Marcap", "Close"]
             )
 
-            frames.append(result)
+            result["Code"] = (
+                result["Code"]
+                .astype(str)
+                .str.zfill(6)
+            )
+
+            market_frames.append(result)
 
         except Exception as e:
-            st.warning(f"{market} 종목 리스트 로딩 실패: {e}")
+            st.warning(
+                f"{market_name} {page}페이지 로딩 실패: {e}"
+            )
             continue
 
-    if not frames:
-        return pd.DataFrame(
-            columns=["Code", "Name", "Marcap", "Close"]
+    if market_frames:
+        frames.append(
+            pd.concat(
+                market_frames,
+                ignore_index=True
+            )
         )
 
-    return pd.concat(frames, ignore_index=True)
+if not frames:
+    return pd.DataFrame(
+        columns=["Code", "Name", "Marcap", "Close"]
+    )
+
+result_df = pd.concat(
+    frames,
+    ignore_index=True
+)
+
+result_df = result_df.drop_duplicates(
+    subset=["Code"]
+)
+
+return result_df.reset_index(drop=True)
+```
 
 
 @st.cache_data(ttl=3600)
