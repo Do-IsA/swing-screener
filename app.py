@@ -840,7 +840,7 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         "marcap": "시가총액",
     }
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🟢 A등급 진입검토",
         "🔵 B등급 대기/눌림확인",
         "🟡 C등급 관심",
