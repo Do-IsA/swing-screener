@@ -1,4 +1,3 @@
-
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
@@ -11,7 +10,6 @@ from ta.trend import SMAIndicator
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from io import StringIO
-from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
@@ -20,10 +18,6 @@ try:
 except Exception:
     ZoneInfo = None
 
-
-# =========================
-# 기본 설정
-# =========================
 
 st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 st.title("📈 스윙 종목 스크리너")
@@ -36,19 +30,13 @@ def get_kst_now():
 
 
 now_kst = get_kst_now()
-today_str = now_kst.strftime("%Y-%m-%d")
-
-st.caption(f"기준일: {today_str} / KST {now_kst.strftime('%H:%M')}")
+st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
 
 PRICE_MIN = 30_000
 HIGH_PRICE_THRESHOLD = 200_000
-
 MARCAP_MIN = 300_000_000_000
 TRADE_AMOUNT_20AVG_MIN = 10_000_000_000
 TRADE_AMOUNT_TODAY_MIN = 5_000_000_000
-
-DATA_DIR = Path("data")
-HISTORY_FILE = DATA_DIR / "screening_history.csv"
 
 
 # =========================
@@ -57,11 +45,7 @@ HISTORY_FILE = DATA_DIR / "screening_history.csv"
 
 st.sidebar.header("💰 시드 계산기")
 
-seed = st.sidebar.number_input(
-    "총 시드 (원)",
-    value=2_000_000,
-    step=100_000
-)
+seed = st.sidebar.number_input("총 시드 (원)", value=2_000_000, step=100_000)
 
 st.sidebar.write(f"1차 매수 (30%): **{int(seed * 0.3):,}원**")
 st.sidebar.write(f"추가 매수 (20%): **{int(seed * 0.2):,}원**")
@@ -70,11 +54,7 @@ st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
 
 st.sidebar.divider()
 
-view_mode = st.sidebar.radio(
-    "보기 방식",
-    ["카드뷰", "표뷰"],
-    index=0
-)
+view_mode = st.sidebar.radio("보기 방식", ["카드뷰", "표뷰"], index=0)
 
 st.sidebar.divider()
 
@@ -85,12 +65,10 @@ favorite_input = st.sidebar.text_area(
 )
 
 favorite_codes = {
-    code.strip()
+    code.strip().zfill(6)
     for code in favorite_input.replace("\n", ",").split(",")
     if code.strip()
 }
-
-st.sidebar.caption("관심종목은 저장소 없이 입력값 기준으로 ⭐ 표시됩니다.")
 
 
 # =========================
@@ -154,7 +132,6 @@ def parse_naver_market_sum_html(html_text):
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
 
     result["Code"] = result["Code"].astype(str).str.zfill(6)
-
     return result.reset_index(drop=True)
 
 
@@ -172,7 +149,6 @@ def load_stock_list():
 
     frames = []
     logs = []
-
     markets = {
         "KOSPI": 0,
         "KOSDAQ": 1,
@@ -237,131 +213,6 @@ def load_ohlcv(code, start):
         return fdr.DataReader(code, start)
     except Exception:
         return None
-
-
-# =========================
-# 기록 저장 / 비교
-# =========================
-
-def load_history():
-    if not HISTORY_FILE.exists():
-        return pd.DataFrame(
-            columns=[
-                "date", "code", "name", "grade", "screen_grade",
-                "trade_type", "close"
-            ]
-        )
-
-    try:
-        hist = pd.read_csv(HISTORY_FILE, dtype={"code": str})
-        hist["code"] = hist["code"].astype(str).str.zfill(6)
-        return hist
-    except Exception:
-        return pd.DataFrame(
-            columns=[
-                "date", "code", "name", "grade", "screen_grade",
-                "trade_type", "close"
-            ]
-        )
-
-
-def get_effective_grade(row):
-    grade = row.get("grade", "-")
-    original_grade = row.get("original_grade", grade)
-
-    if grade == "watch_high":
-        return original_grade
-
-    return grade
-
-
-def enrich_with_history(current_df, history_df):
-    if current_df.empty:
-        return current_df
-
-    result = current_df.copy()
-    result["code"] = result["code"].astype(str).str.zfill(6)
-
-    if history_df.empty:
-        result["recent_5_count"] = 1
-        result["prev_grade"] = "-"
-        result["grade_change"] = "신규"
-        return result
-
-    history_df = history_df.copy()
-    history_df["code"] = history_df["code"].astype(str).str.zfill(6)
-
-    unique_dates = sorted(history_df["date"].dropna().unique())
-    recent_dates = unique_dates[-5:]
-
-    recent_hist = history_df[history_df["date"].isin(recent_dates)]
-    recent_count_map = recent_hist.groupby("code")["date"].nunique().to_dict()
-
-    prev_date = unique_dates[-1] if unique_dates else None
-    prev_grade_map = {}
-
-    if prev_date:
-        prev_df = history_df[history_df["date"] == prev_date]
-        prev_grade_map = dict(zip(prev_df["code"], prev_df["grade"]))
-
-    current_grades = result.apply(get_effective_grade, axis=1)
-
-    recent_counts = []
-    prev_grades = []
-    changes = []
-
-    for code, current_grade in zip(result["code"], current_grades):
-        count = int(recent_count_map.get(code, 0)) + 1
-        prev_grade = prev_grade_map.get(code, "-")
-
-        if prev_grade == "-":
-            change = "신규"
-        elif prev_grade == current_grade:
-            change = "유지"
-        else:
-            change = f"{prev_grade} → {current_grade}"
-
-        recent_counts.append(count)
-        prev_grades.append(prev_grade)
-        changes.append(change)
-
-    result["recent_5_count"] = recent_counts
-    result["prev_grade"] = prev_grades
-    result["grade_change"] = changes
-
-    return result
-
-
-def save_today_history(today_df):
-    if today_df.empty:
-        return
-
-    DATA_DIR.mkdir(exist_ok=True)
-
-    history_df = load_history()
-    history_df = history_df[history_df["date"] != today_str]
-
-    rows = []
-
-    for _, row in today_df.iterrows():
-        screen_grade = row.get("grade", "-")
-        effective_grade = get_effective_grade(row)
-
-        rows.append(
-            {
-                "date": today_str,
-                "code": str(row.get("code", "")).zfill(6),
-                "name": row.get("name", ""),
-                "grade": effective_grade,
-                "screen_grade": screen_grade,
-                "trade_type": row.get("trade_type", ""),
-                "close": row.get("close", 0),
-            }
-        )
-
-    today_history = pd.DataFrame(rows)
-    new_history = pd.concat([history_df, today_history], ignore_index=True)
-    new_history.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
 
 
 # =========================
@@ -455,7 +306,7 @@ def make_result(
         "grade": grade,
         "original_grade": original_grade or grade,
         "name": name,
-        "code": code,
+        "code": str(code).zfill(6),
         "close": int(close_price),
         "ma5": round(ma5, 0) if pd.notna(ma5) else 0,
         "ma20": round(ma20, 0) if pd.notna(ma20) else 0,
@@ -707,9 +558,8 @@ def show_table(df, cols):
         return
 
     for _, row in df.iterrows():
-        row_code = str(row.get("code")).zfill(6)
-        is_favorite = row_code in favorite_codes
-        star = "⭐ " if is_favorite else ""
+        row_code = str(row.get("code", "")).zfill(6)
+        star = "⭐ " if row_code in favorite_codes else ""
 
         with st.container(border=True):
             st.markdown(f"### {star}{row.get('name', '-')} ({row_code})")
@@ -722,8 +572,6 @@ def show_table(df, cols):
             st.markdown(f"**매수구간:** {row.get('buy_zone', '-')}")
             st.markdown(f"**손절가:** {row.get('stop_loss', '-')}")
             st.markdown(f"**사유:** {row.get('reason', '-')}")
-            st.markdown(f"**최근 5일 등장:** {row.get('recent_5_count', '-')}회")
-            st.markdown(f"**등급 변화:** {row.get('grade_change', '-')}")
 
             st.markdown(
                 f"[📈 차트 보기]({row.get('chart', '')})"
@@ -738,15 +586,48 @@ def show_table(df, cols):
                 st.write(f"**RSI:** {row.get('rsi', '-')}")
                 st.write(f"**거래량비율:** {row.get('vol_ratio', '-')}%")
                 st.write(f"**고점대비:** {row.get('pullback', '-')}%")
-                st.write(f"**이전 등급:** {row.get('prev_grade', '-')}")
                 st.write(f"**시가총액:** {fmt_number(row.get('marcap'))}원")
+
+
+def show_favorite_summary(df_result, df_watch, base_cols, watch_cols):
+    st.subheader("⭐ 관심종목 빠른 확인")
+
+    if not favorite_codes:
+        st.write("사이드바에 관심종목 코드를 입력하면 여기에 먼저 표시됩니다.")
+        return
+
+    frames = []
+
+    if not df_result.empty:
+        frames.append(df_result.copy())
+
+    if not df_watch.empty:
+        frames.append(df_watch.copy())
+
+    if not frames:
+        st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
+        return
+
+    favorite_all = pd.concat(frames, ignore_index=True)
+    favorite_all["code"] = favorite_all["code"].astype(str).str.zfill(6)
+
+    favorite_df = favorite_all[favorite_all["code"].isin(favorite_codes)]
+
+    if favorite_df.empty:
+        st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
+        return
+
+    show_table(favorite_df, watch_cols if "original_grade" in favorite_df.columns else base_cols)
 
 
 # =========================
 # 실행
 # =========================
 
-if st.button("🔍 종목 스캔 시작", type="primary"):
+scan_full = st.button("🔍 전체 종목 스캔 시작", type="primary")
+scan_favorites = st.button("⭐ 관심종목만 빠른 재조회")
+
+if scan_full or scan_favorites:
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
 
@@ -761,6 +642,19 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
         st.stop()
+
+    stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
+
+    if scan_favorites:
+        if not favorite_codes:
+            st.warning("관심종목 코드가 없습니다. 사이드바에 종목코드를 먼저 입력해 주세요.")
+            st.stop()
+
+        stocks = stocks[stocks["Code"].isin(favorite_codes)]
+
+        if stocks.empty:
+            st.warning("입력한 관심종목 코드가 종목 리스트에 없습니다.")
+            st.stop()
 
     stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
     stocks = stocks[stocks["Close"] >= PRICE_MIN]
@@ -793,28 +687,16 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
     df_result = pd.DataFrame(results)
     df_watch = pd.DataFrame(watch_high)
 
-    combined_today = pd.concat([df_result, df_watch], ignore_index=True)
-
-    history_df = load_history()
-    combined_today = enrich_with_history(combined_today, history_df)
-    save_today_history(combined_today)
-
-    if not combined_today.empty:
-        df_result = combined_today[combined_today["grade"] != "watch_high"].copy()
-        df_watch = combined_today[combined_today["grade"] == "watch_high"].copy()
-
     base_cols = [
         "name", "code", "close", "ma5", "ma20", "rsi",
         "vol_ratio", "pullback", "trade_type", "buy_zone",
-        "stop_loss", "recent_5_count", "prev_grade", "grade_change",
-        "strategy", "reason", "chart", "news", "marcap"
+        "stop_loss", "strategy", "reason", "chart", "news", "marcap"
     ]
 
     watch_cols = [
         "name", "code", "original_grade", "close", "ma5", "ma20",
         "rsi", "vol_ratio", "pullback", "trade_type", "buy_zone",
-        "stop_loss", "recent_5_count", "prev_grade", "grade_change",
-        "strategy", "reason", "chart", "news", "marcap"
+        "stop_loss", "strategy", "reason", "chart", "news", "marcap"
     ]
 
     col_names = {
@@ -830,9 +712,6 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         "trade_type": "유형",
         "buy_zone": "매수구간",
         "stop_loss": "손절가",
-        "recent_5_count": "최근5일등장",
-        "prev_grade": "이전등급",
-        "grade_change": "등급변화",
         "strategy": "전략",
         "reason": "사유",
         "chart": "차트",
@@ -840,52 +719,58 @@ if st.button("🔍 종목 스캔 시작", type="primary"):
         "marcap": "시가총액",
     }
 
+    show_favorite_summary(df_result, df_watch, base_cols, watch_cols)
+
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "⭐ 관심종목",
         "🟢 A등급 진입검토",
         "🔵 B등급 대기/눌림확인",
         "🟡 C등급 관심",
         "👀 20만원↑ 별도관심",
-        "⭐ 관심종목",
     ])
 
     with tab1:
+        if favorite_codes:
+            frames = []
+            if not df_result.empty:
+                frames.append(df_result.copy())
+            if not df_watch.empty:
+                frames.append(df_watch.copy())
+
+            if frames:
+                favorite_all = pd.concat(frames, ignore_index=True)
+                favorite_all["code"] = favorite_all["code"].astype(str).str.zfill(6)
+                favorite_df = favorite_all[favorite_all["code"].isin(favorite_codes)]
+
+                if not favorite_df.empty:
+                    show_table(favorite_df, watch_cols if "original_grade" in favorite_df.columns else base_cols)
+                else:
+                    st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
+            else:
+                st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
+        else:
+            st.write("사이드바에 관심종목 코드를 입력해 주세요.")
+
+    with tab2:
         if not df_result.empty:
             show_table(df_result[df_result["grade"] == "A"], base_cols)
         else:
             st.write("해당 종목 없음")
 
-    with tab2:
+    with tab3:
         if not df_result.empty:
             show_table(df_result[df_result["grade"] == "B"], base_cols)
         else:
             st.write("해당 종목 없음")
 
-    with tab3:
+    with tab4:
         if not df_result.empty:
             show_table(df_result[df_result["grade"] == "C"], base_cols)
         else:
             st.write("해당 종목 없음")
 
-    with tab4:
+    with tab5:
         if not df_watch.empty:
             show_table(df_watch, watch_cols)
         else:
             st.write("해당 종목 없음")
-    with tab5:
-        favorite_all = pd.concat(
-            [df_result, df_watch],
-            ignore_index=True
-        )
-    
-        if not favorite_all.empty and favorite_codes:
-            favorite_all["code"] = favorite_all["code"].astype(str).str.zfill(6)
-            favorite_df = favorite_all[
-                favorite_all["code"].isin(favorite_codes)
-            ]
-    
-            show_table(
-                favorite_df,
-                watch_cols if not favorite_df.empty and "original_grade" in favorite_df.columns else base_cols
-            )
-        else:
-            st.write("관심종목 코드가 없거나, 오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
