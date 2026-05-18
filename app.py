@@ -31,6 +31,52 @@ def get_kst_now():
 
 now_kst = get_kst_now()
 st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 0.55rem 0.65rem !important;
+        border-radius: 0.7rem !important;
+    }
+
+    .compact-card-title {
+        font-size: 0.98rem;
+        font-weight: 700;
+        line-height: 1.25;
+        margin-bottom: 0.25rem;
+    }
+
+    .compact-card-line {
+        font-size: 0.84rem;
+        line-height: 1.35;
+        margin: 0.08rem 0;
+    }
+
+    .compact-card-muted {
+        font-size: 0.78rem;
+        color: #777;
+        line-height: 1.3;
+        margin-top: 0.12rem;
+    }
+
+    .compact-card-links {
+        font-size: 0.82rem;
+        line-height: 1.3;
+        margin-top: 0.25rem;
+    }
+
+    .compact-badge {
+        display: inline-block;
+        padding: 0.05rem 0.35rem;
+        border-radius: 0.4rem;
+        background: #f1f3f5;
+        font-size: 0.72rem;
+        margin-left: 0.25rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 PRICE_MIN = 30_000
 HIGH_PRICE_THRESHOLD = 200_000
@@ -561,25 +607,36 @@ def show_table(df, cols):
         row_code = str(row.get("code", "")).zfill(6)
         star = "⭐ " if row_code in favorite_codes else ""
 
+        name = row.get("name", "-")
+        grade = row.get("grade", "-")
+        original_grade = row.get("original_grade", "-")
+        badge = original_grade if grade == "watch_high" else grade
+
         with st.container(border=True):
-            st.markdown(f"### {star}{row.get('name', '-')} ({row_code})")
-
-            if row.get("grade") == "watch_high":
-                st.caption(f"원래등급: {row.get('original_grade', '-')}")
-
-            st.markdown(f"**유형:** {row.get('trade_type', '-')}")
-            st.markdown(f"**현재가:** {fmt_price(row.get('close'))}")
-            st.markdown(f"**매수구간:** {row.get('buy_zone', '-')}")
-            st.markdown(f"**손절가:** {row.get('stop_loss', '-')}")
-            st.markdown(f"**사유:** {row.get('reason', '-')}")
-
             st.markdown(
-                f"[📈 차트 보기]({row.get('chart', '')})"
-                f"  |  "
-                f"[📰 뉴스 보기]({row.get('news', '')})"
+                f"""
+                <div class="compact-card-title">
+                    {star}{name} <span class="compact-card-muted">({row_code})</span>
+                    <span class="compact-badge">{badge}</span>
+                </div>
+                <div class="compact-card-line"><b>현재가</b> {fmt_price(row.get("close"))}</div>
+                <div class="compact-card-line"><b>매수</b> {row.get("buy_zone", "-")}</div>
+                <div class="compact-card-line"><b>손절</b> {row.get("stop_loss", "-")}</div>
+                <div class="compact-card-muted">{row.get("trade_type", "-")}</div>
+                <div class="compact-card-links">
+                    <a href="{row.get("chart", "")}" target="_blank">📈 차트</a>
+                    &nbsp;|&nbsp;
+                    <a href="{row.get("news", "")}" target="_blank">📰 뉴스</a>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
-            with st.expander("📊 상세 정보 보기"):
+            with st.expander("상세"):
+                if grade == "watch_high":
+                    st.write(f"**원래등급:** {original_grade}")
+
+                st.write(f"**사유:** {row.get('reason', '-')}")
                 st.write(f"**전략:** {row.get('strategy', '-')}")
                 st.write(f"**20일선:** {fmt_price(row.get('ma20'))}")
                 st.write(f"**5일선:** {fmt_price(row.get('ma5'))}")
