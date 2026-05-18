@@ -387,18 +387,19 @@ def analyze_stock(code, name, marcap):
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
     now = get_kst_now()
-
-    # 00:00~13:59: 전날 완성봉 기준
-    # 14:00 이후: 당일봉 기준
-    use_today_candle = now.hour > 14 or (now.hour == 14 and now.minute >= 0)
-
+    
+    market_closed = (
+        now.hour > 15
+        or (now.hour == 15 and now.minute >= 30)
+    )
+    
     try:
-        latest_pos = len(df) - 1 if use_today_candle else len(df) - 2
+        latest_pos = len(df) - 1 if market_closed else len(df) - 2
         prev_pos = latest_pos - 1
-
+    
         if latest_pos < 60 or prev_pos < 0:
             return None
-
+    
         latest = df.iloc[latest_pos]
         prev = df.iloc[prev_pos]
     except Exception:
@@ -713,8 +714,6 @@ if scan_full or scan_favorites:
             st.warning("입력한 관심종목 코드가 종목 리스트에 없습니다.")
             st.stop()
 
-    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
-    stocks = stocks[stocks["Close"] >= PRICE_MIN]
 
     results = []
     watch_high = []
