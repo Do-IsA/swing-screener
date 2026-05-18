@@ -31,6 +31,7 @@ def get_kst_now():
 
 now_kst = get_kst_now()
 st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
+
 st.markdown(
     """
     <style>
@@ -38,45 +39,17 @@ st.markdown(
         padding: 0.55rem 0.65rem !important;
         border-radius: 0.7rem !important;
     }
-
-    .compact-card-title {
-        font-size: 0.98rem;
-        font-weight: 700;
-        line-height: 1.25;
-        margin-bottom: 0.25rem;
-    }
-
-    .compact-card-line {
-        font-size: 0.84rem;
-        line-height: 1.35;
-        margin: 0.08rem 0;
-    }
-
-    .compact-card-muted {
-        font-size: 0.78rem;
-        color: #777;
-        line-height: 1.3;
-        margin-top: 0.12rem;
-    }
-
-    .compact-card-links {
-        font-size: 0.82rem;
-        line-height: 1.3;
-        margin-top: 0.25rem;
-    }
-
-    .compact-badge {
-        display: inline-block;
-        padding: 0.05rem 0.35rem;
-        border-radius: 0.4rem;
-        background: #f1f3f5;
-        font-size: 0.72rem;
-        margin-left: 0.25rem;
-    }
+    .compact-card-title { font-size: 0.98rem; font-weight: 700; line-height: 1.25; margin-bottom: 0.25rem; }
+    .compact-card-line { font-size: 0.84rem; line-height: 1.35; margin: 0.08rem 0; }
+    .compact-card-muted { font-size: 0.78rem; color: #777; line-height: 1.3; margin-top: 0.12rem; }
+    .compact-card-links { font-size: 0.82rem; line-height: 1.3; margin-top: 0.25rem; }
+    .compact-badge { display: inline-block; padding: 0.05rem 0.35rem; border-radius: 0.4rem; background: #f1f3f5; font-size: 0.72rem; margin-left: 0.25rem; vertical-align: middle; }
+    div[data-testid="stExpander"] details { font-size: 0.82rem; }
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
+
 
 PRICE_MIN = 30_000
 HIGH_PRICE_THRESHOLD = 200_000
@@ -178,6 +151,8 @@ def parse_naver_market_sum_html(html_text):
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
 
     result["Code"] = result["Code"].astype(str).str.zfill(6)
+    result = result[result["Code"].str.match(r"^\d{6}$", na=False)]
+    result = result.drop_duplicates(subset=["Code"])
     return result.reset_index(drop=True)
 
 
@@ -200,10 +175,14 @@ def load_stock_list():
         "KOSDAQ": 1,
     }
 
+    max_page = 45
+
     for market_name, sosok in markets.items():
         market_frames = []
+        seen_codes = set()
+        empty_page_count = 0
 
-        for page in range(1, 80):
+        for page in range(1, max_page + 1):
             url = (
                 "https://finance.naver.com/sise/"
                 f"sise_market_sum.naver?sosok={sosok}&page={page}"
@@ -217,14 +196,34 @@ def load_stock_list():
                     logs.append(f"{market_name} {page}페이지 HTTP {res.status_code}")
                     continue
 
-                result = parse_naver_market_sum_html(res.text)
+                page_df = parse_naver_market_sum_html(res.text)
 
-                if result.empty:
+                if page_df.empty:
+                    empty_page_count += 1
+
                     if page == 1:
                         logs.append(f"{market_name} 1페이지에서 종목 데이터를 찾지 못했습니다.")
+
+                    if empty_page_count >= 2:
+                        break
+
+                    continue
+
+                empty_page_count = 0
+
+                page_codes = set(page_df["Code"].astype(str))
+                new_codes = page_codes - seen_codes
+
+                if not new_codes:
+                    logs.append(f"{market_name} {page}페이지 신규 종목 없음 → 종료")
                     break
 
-                market_frames.append(result)
+                seen_codes.update(page_codes)
+                page_df = page_df[page_df["Code"].isin(new_codes)]
+                page_df = page_df.drop_duplicates(subset=["Code"])
+
+                if not page_df.empty:
+                    market_frames.append(page_df)
 
             except Exception as e:
                 logs.append(f"{market_name} {page}페이지 로딩 실패: {e}")
@@ -232,6 +231,7 @@ def load_stock_list():
 
         if market_frames:
             market_df = pd.concat(market_frames, ignore_index=True)
+            market_df = market_df.drop_duplicates(subset=["Code"])
             frames.append(market_df)
             logs.append(f"{market_name}: {len(market_df)}개 로딩")
         else:
@@ -241,10 +241,15 @@ def load_stock_list():
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
 
     result_df = pd.concat(frames, ignore_index=True)
+    result_df["Code"] = result_df["Code"].astype(str).str.zfill(6)
+    result_df = result_df[result_df["Code"].str.match(r"^\d{6}$", na=False)]
     result_df = result_df.drop_duplicates(subset=["Code"])
     result_df = result_df.reset_index(drop=True)
 
     logs.append(f"전체 종목 수: {len(result_df)}개")
+
+    if len(result_df) > 3000:
+        logs.append("주의: 종목 수가 3000개를 초과했습니다. 네이버 페이지 구조 변동 가능성이 있습니다.")
 
     return result_df, logs
 
@@ -387,19 +392,17 @@ def analyze_stock(code, name, marcap):
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
     now = get_kst_now()
-    
-    market_closed = (
-        now.hour > 15
-        or (now.hour == 15 and now.minute >= 30)
-    )
-    
+
+    # 장중에는 전날 완성봉 기준, 15:30 이후에는 당일 종가 기준
+    market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+
     try:
         latest_pos = len(df) - 1 if market_closed else len(df) - 2
         prev_pos = latest_pos - 1
-    
+
         if latest_pos < 60 or prev_pos < 0:
             return None
-    
+
         latest = df.iloc[latest_pos]
         prev = df.iloc[prev_pos]
     except Exception:
@@ -714,6 +717,9 @@ if scan_full or scan_favorites:
             st.warning("입력한 관심종목 코드가 종목 리스트에 없습니다.")
             st.stop()
 
+    # 시총 필터는 종목 리스트 기준.
+    # 가격 필터는 장중 네이버 현재가로 흔들리지 않도록 analyze_stock 내부 기준봉으로만 적용.
+    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
 
     results = []
     watch_high = []
