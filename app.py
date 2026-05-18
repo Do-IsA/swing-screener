@@ -3,6 +3,7 @@ import FinanceDataReader as fdr
 import pandas as pd
 import requests
 import warnings
+import re
 
 from bs4 import BeautifulSoup
 from ta.momentum import RSIIndicator
@@ -252,6 +253,45 @@ def load_stock_list():
         logs.append("주의: 종목 수가 3000개를 초과했습니다. 네이버 페이지 구조 변동 가능성이 있습니다.")
 
     return result_df, logs
+
+
+def apply_base_filters(stocks):
+    logs = []
+
+    before = len(stocks)
+
+    stocks = stocks.copy()
+    stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
+    stocks["Name"] = stocks["Name"].astype(str)
+    stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce")
+    stocks["Close"] = pd.to_numeric(stocks["Close"], errors="coerce")
+
+    stocks = stocks.dropna(subset=["Code", "Name", "Marcap", "Close"])
+    logs.append(f"원자료 정리 후: {len(stocks):,}개 / 최초 {before:,}개")
+
+    exclude_keywords = [
+        "스팩", "SPAC", "리츠", "ETN", "ETF",
+        "인버스", "레버리지", "선물",
+        "KODEX", "TIGER", "ACE", "SOL", "RISE", "PLUS", "HANARO",
+        "KBSTAR", "ARIRANG", "KOSEF", "TIMEFOLIO", "TREX", "마이티",
+    ]
+    pattern = "|".join([re.escape(x) for x in exclude_keywords])
+
+    stocks = stocks[
+        ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
+    ]
+
+    stocks = stocks[
+        ~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)
+    ]
+
+    logs.append(f"ETF/ETN/스팩/리츠/우선주 제외 후: {len(stocks):,}개")
+
+    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
+    logs.append(f"시총 {MARCAP_MIN:,}원 이상 필터 후: {len(stocks):,}개")
+    logs.append("가격 필터는 analyze_stock()의 기준봉 종가로 적용")
+
+    return stocks.reset_index(drop=True), logs
 
 
 # =========================
@@ -704,7 +744,11 @@ if scan_full or scan_favorites:
         st.error("종목 리스트를 불러오지 못했습니다.")
         st.stop()
 
-    stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
+    stocks, filter_logs = apply_base_filters(stocks)
+
+    st.subheader("기본 필터 적용 로그")
+    for log in filter_logs:
+        st.write(log)
 
     if scan_favorites:
         if not favorite_codes:
@@ -714,12 +758,14 @@ if scan_full or scan_favorites:
         stocks = stocks[stocks["Code"].isin(favorite_codes)]
 
         if stocks.empty:
-            st.warning("입력한 관심종목 코드가 종목 리스트에 없습니다.")
+            st.warning("입력한 관심종목 코드가 기본 필터를 통과하지 못했거나 종목 리스트에 없습니다.")
             st.stop()
 
-    # 시총 필터는 종목 리스트 기준.
-    # 가격 필터는 장중 네이버 현재가로 흔들리지 않도록 analyze_stock 내부 기준봉으로만 적용.
-    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
+    if stocks.empty:
+        st.warning("기본 필터 통과 종목이 없습니다.")
+        st.stop()
+
+    st.write(f"실제 분석 대상: {len(stocks):,}개")
 
     results = []
     watch_high = []
