@@ -65,9 +65,10 @@ TRADE_AMOUNT_20AVG_MIN = 10_000_000_000
 TRADE_AMOUNT_TODAY_MIN = 5_000_000_000
 
 EXCLUDE_KEYWORDS = [
-    "스팩", "SPAC", "리츠", "ETN", "ETF", "인버스", "레버리지", "선물",
+    "스팩", "SPAC", "리츠", "ETN", "ETF", "액티브",
+    "인버스", "레버리지", "선물",
     "KODEX", "TIGER", "ACE", "SOL", "RISE", "PLUS", "HANARO",
-    "KBSTAR", "ARIRANG", "KOSEF", "TIMEFOLIO", "TREX", "마이티",
+    "KBSTAR", "ARIRANG", "KOSEF", "TIMEFOLIO", "TIME", "TREX", "마이티",
 ]
 
 # =========================
@@ -407,7 +408,7 @@ def analyze_stock(code, name, marcap):
     # OR 조건: 둘 중 하나라도 해당하면 거래 죽은 종목
     if (
         trade_amount_3avg < trade_amount_20avg * 0.5
-        or trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN
+        and trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN
     ):
         return None
 
