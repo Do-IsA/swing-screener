@@ -734,11 +734,10 @@ if scan_full or scan_favorites:
 
     st.subheader("종목 리스트 로딩 로그")
 
+    with st.expander("종목 리스트 로딩 로그"):
     if load_logs:
         for log in load_logs:
             st.write(log)
-    else:
-        st.write("로딩 로그가 비어 있습니다.")
 
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
@@ -746,9 +745,11 @@ if scan_full or scan_favorites:
 
     stocks, filter_logs = apply_base_filters(stocks)
 
-    st.subheader("기본 필터 적용 로그")
+    with st.expander("기본 필터 적용 로그"):
     for log in filter_logs:
         st.write(log)
+
+    st.success(f"실제 분석 대상: {len(stocks):,}개")
 
     if scan_favorites:
         if not favorite_codes:
