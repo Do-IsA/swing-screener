@@ -36,11 +36,19 @@ st.markdown(
     """
     <style>
     div[data-testid="stVerticalBlockBorderWrapper"] {padding:0.55rem 0.65rem!important;border-radius:0.7rem!important;}
-    .compact-card-title {font-size:0.98rem;font-weight:700;line-height:1.25;margin-bottom:0.25rem;}
-    .compact-card-line {font-size:0.84rem;line-height:1.35;margin:0.08rem 0;}
-    .compact-card-muted {font-size:0.78rem;color:#777;line-height:1.3;margin-top:0.12rem;}
-    .compact-card-links {font-size:0.82rem;line-height:1.3;margin-top:0.25rem;}
-    .compact-badge {display:inline-block;padding:0.05rem 0.35rem;border-radius:0.4rem;background:#f1f3f5;font-size:0.72rem;margin-left:0.25rem;vertical-align:middle;}
+    .compact-card-title {font-size:1.0rem;font-weight:700;line-height:1.3;margin-bottom:0.1rem;}
+    .compact-card-sub {font-size:0.78rem;color:#888;line-height:1.3;margin-bottom:0.25rem;}
+    .compact-card-line {font-size:0.84rem;line-height:1.45;margin:0.06rem 0;}
+    .compact-card-muted {font-size:0.78rem;color:#777;line-height:1.3;margin-top:0.1rem;}
+    .compact-badge {display:inline-block;padding:0.05rem 0.4rem;border-radius:0.4rem;font-size:0.72rem;margin-left:0.3rem;vertical-align:middle;font-weight:600;}
+    .badge-A {background:#d4edda;color:#155724;}
+    .badge-B {background:#cce5ff;color:#004085;}
+    .badge-C {background:#fff3cd;color:#856404;}
+    .badge-W {background:#f8d7da;color:#721c24;}
+    .btn-row {display:flex;gap:0.5rem;margin-top:0.4rem;}
+    .btn-link {flex:1;text-align:center;padding:0.4rem 0;border-radius:0.5rem;text-decoration:none;font-size:0.82rem;font-weight:500;}
+    .btn-chart {background:#e8f4fd;color:#0056b3;}
+    .btn-news {background:#f0f4e8;color:#3d6b1e;}
     div[data-testid="stExpander"] details {font-size:0.82rem;}
     </style>
     """,
@@ -76,6 +84,7 @@ view_mode = st.sidebar.radio("보기 방식", ["카드뷰", "표뷰"], index=0)
 st.sidebar.divider()
 favorite_input = st.sidebar.text_area("⭐ 관심종목 코드", value="", placeholder="예: 005930,000660,319660")
 favorite_codes = {code.strip().zfill(6) for code in favorite_input.replace("\n", ",").split(",") if code.strip()}
+
 
 # =========================
 # 종목 리스트
@@ -243,6 +252,21 @@ def fmt_price(value):
         return "-"
 
 
+def fmt_price_short(value):
+    """모바일 카드용 축약 가격 표시"""
+    try:
+        if pd.isna(value):
+            return "-"
+        v = int(value)
+        if v >= 1_000_000:
+            return f"{v / 1_000_000:.1f}M"
+        if v >= 1_000:
+            return f"{v / 1_000:.0f}K"
+        return str(v)
+    except Exception:
+        return "-"
+
+
 def fmt_number(value):
     try:
         if pd.isna(value):
@@ -288,6 +312,9 @@ def make_result(grade, code, name, close_price, ma5, ma20, rsi, volume_today,
         "vol_ratio": round(volume_today / volume_5avg * 100, 1) if volume_5avg > 0 else 0,
         "pullback": round(pullback, 1),
         "trade_type": trade_type,
+        "buy_low_raw": buy_low,
+        "buy_high_raw": buy_high,
+        "stop_loss_raw": stop_loss,
         "buy_zone": f"{buy_low:,} ~ {buy_high:,}" if buy_low else "-",
         "stop_loss": f"{stop_loss:,}" if stop_loss else "-",
         "strategy": strategy,
@@ -304,11 +331,7 @@ def analyze_stock(code, name, marcap):
     if df is None or len(df) < 80:
         return None
 
-    df["ma5"] = SMAIndicator(df["Close"], window=5).sma_indicator()
-    df["ma20"] = SMAIndicator(df["Close"], window=20).sma_indicator()
-    df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
-    df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
-
+    # 장중/장후 기준봉 확정
     now = get_kst_now()
     market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
     try:
@@ -321,10 +344,27 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    close_price, ma5, ma20, ma60, rsi = latest["Close"], latest["ma5"], latest["ma20"], latest["ma60"], latest["rsi"]
+    close_price = latest["Close"]
+
+    # ── 조기 탈출: 가격 필터 (지표 계산 전) ──────────────────────
+    if close_price < PRICE_MIN:
+        return None
+
+    # ── 지표 계산 ─────────────────────────────────────────────────
+    df["ma5"] = SMAIndicator(df["Close"], window=5).sma_indicator()
+    df["ma20"] = SMAIndicator(df["Close"], window=20).sma_indicator()
+    df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
+    df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
+
+    ma5 = latest["ma5"]
+    ma20 = latest["ma20"]
+    ma60 = latest["ma60"]
+    rsi = latest["rsi"]
+
     if pd.isna(ma5) or pd.isna(ma20) or pd.isna(ma60) or pd.isna(rsi):
         return None
 
+    # ── 거래대금 / 거래량 계산 ────────────────────────────────────
     try:
         ma60_5ago = df.iloc[latest_pos - 5]["ma60"]
         volume_today = latest["Volume"]
@@ -336,17 +376,16 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    if close_price < PRICE_MIN:
-        return None
-    if marcap < MARCAP_MIN:
-        return None
+    # ── 거래대금 필터 ─────────────────────────────────────────────
     if trade_amount_20avg < TRADE_AMOUNT_20AVG_MIN:
         return None
     if trade_amount_today < TRADE_AMOUNT_TODAY_MIN:
         return None
-    if trade_amount_3avg < trade_amount_20avg * 0.5 and trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN:
+    # OR 조건: 둘 중 하나라도 해당하면 거래 죽은 종목
+    if trade_amount_3avg < trade_amount_20avg * 0.5 or trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN:
         return None
 
+    # ── 과열 / 급등 필터 ──────────────────────────────────────────
     try:
         surge_3d = ((close_price - df["Close"].iloc[latest_pos - 3]) / df["Close"].iloc[latest_pos - 3]) * 100
         today_change = ((close_price - prev["Close"]) / prev["Close"]) * 100
@@ -359,7 +398,9 @@ def analyze_stock(code, name, marcap):
     if prev_body >= 3 and today_change < 2:
         return None
 
+    # ── 추세 / 눌림 조건 계산 ─────────────────────────────────────
     trend_ok = close_price > ma20 and ma20 > ma60 and ma60 > ma60_5ago
+
     try:
         high_20d = df["High"].iloc[latest_pos - 20:latest_pos].max()
         pullback_pct = ((close_price - high_20d) / high_20d) * 100
@@ -373,16 +414,44 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    pullback_ok = -20 <= pullback_pct <= -5 and near_ma20 and sideways and vol_decrease
-    entry_a = trend_ok and pullback_ok and close_price > prev["Close"] and close_price > ma5 and volume_today > prev["Volume"] and 45 <= rsi <= 65 and close_price > ma20
-    entry_b_safe = trend_ok and close_price > high_10d and vol_ratio >= 150 and rsi < 70 and close_price <= ma20 * 1.12
-    entry_b_aggressive = trend_ok and close_price > high_10d and vol_ratio >= 150 and rsi < 72 and close_price <= ma20 * 1.18
+    # pullback_ok: 핵심 2개만 필수 (sideways/vol_decrease는 entry_a에서 추가 확인)
+    pullback_ok = -15 <= pullback_pct <= -3 and near_ma20
 
+    entry_a = (
+        trend_ok and
+        pullback_ok and
+        sideways and
+        vol_decrease and
+        close_price > prev["Close"] and
+        close_price > ma5 and
+        volume_today >= volume_20avg * 0.8 and
+        40 <= rsi <= 68 and
+        close_price > ma20
+    )
+
+    entry_b_safe = (
+        trend_ok and
+        close_price > high_10d and
+        vol_ratio >= 150 and
+        rsi < 70 and
+        close_price <= ma20 * 1.12
+    )
+
+    entry_b_aggressive = (
+        trend_ok and
+        close_price > high_10d and
+        vol_ratio >= 150 and
+        rsi < 72 and
+        close_price <= ma20 * 1.18 and
+        not entry_b_safe  # 명시적 분리
+    )
+
+    # ── 등급 결정 ─────────────────────────────────────────────────
     if entry_a:
         grade, trade_type, reason = "A", "눌림형", "눌림 후 재상승"
     elif entry_b_safe:
         grade, trade_type, reason = "A", "돌파형 안정형", "박스권 돌파 안정형"
-    elif entry_b_aggressive and not entry_b_safe:
+    elif entry_b_aggressive:
         grade, trade_type, reason = "B", "돌파형 공격형", "박스권 돌파 공격형 / 다음날 눌림 확인"
     elif trend_ok and pullback_ok:
         grade, trade_type, reason = "B", "눌림형", "눌림 형성 중 / 거래량 확인 필요"
@@ -394,30 +463,97 @@ def analyze_stock(code, name, marcap):
     buy_low, buy_high, strategy = calc_buy_zone(trade_type, close_price, ma20, high_10d)
     stop_loss = calc_stop_loss(trade_type, buy_low, ma20, recent_low)
 
+    # ── 20만원 이상 watch_high 분류 ───────────────────────────────
     if close_price >= HIGH_PRICE_THRESHOLD:
-        return make_result("watch_high", code, name, close_price, ma5, ma20, rsi, volume_today, volume_5avg, f"20만원 이상 별도관심 / 원래 등급: {grade} / {reason}", marcap, pullback_pct, trade_type, buy_low, buy_high, stop_loss, strategy, original_grade=grade)
+        return make_result(
+            "watch_high", code, name, close_price, ma5, ma20, rsi,
+            volume_today, volume_5avg,
+            f"20만원 이상 별도관심 / 원래 등급: {grade} / {reason}",
+            marcap, pullback_pct, trade_type,
+            buy_low, buy_high, stop_loss, strategy,
+            original_grade=grade
+        )
 
-    return make_result(grade, code, name, close_price, ma5, ma20, rsi, volume_today, volume_5avg, reason, marcap, pullback_pct, trade_type, buy_low, buy_high, stop_loss, strategy)
+    return make_result(
+        grade, code, name, close_price, ma5, ma20, rsi,
+        volume_today, volume_5avg, reason,
+        marcap, pullback_pct, trade_type,
+        buy_low, buy_high, stop_loss, strategy
+    )
+
+
+# =========================
+# 카드 / 표 렌더링
+# =========================
+col_names = {
+    "name": "종목명", "code": "코드", "original_grade": "원래등급",
+    "close": "현재가", "ma5": "5일선", "ma20": "20일선", "rsi": "RSI",
+    "vol_ratio": "거래량비율(%)", "pullback": "고점대비(%)", "trade_type": "유형",
+    "buy_zone": "매수구간", "stop_loss": "손절가", "strategy": "전략",
+    "reason": "사유", "chart": "차트", "news": "뉴스", "marcap": "시가총액",
+}
+
+base_cols = [
+    "name", "code", "close", "ma5", "ma20", "rsi", "vol_ratio", "pullback",
+    "trade_type", "buy_zone", "stop_loss", "strategy", "reason", "chart", "news", "marcap",
+]
+watch_cols = [
+    "name", "code", "original_grade", "close", "ma5", "ma20", "rsi", "vol_ratio", "pullback",
+    "trade_type", "buy_zone", "stop_loss", "strategy", "reason", "chart", "news", "marcap",
+]
+
+BADGE_CLASS = {"A": "badge-A", "B": "badge-B", "C": "badge-C", "watch_high": "badge-W"}
 
 
 def show_table(df, cols):
-    if df.empty:
+    if df is None or df.empty:
         st.write("해당 종목 없음")
         return
-    display_df = df[cols].rename(columns=col_names)
+
     if view_mode == "표뷰":
-        st.dataframe(display_df, use_container_width=True, column_config={"차트": st.column_config.LinkColumn("차트", display_text="차트 보기"), "뉴스": st.column_config.LinkColumn("뉴스", display_text="뉴스 보기")})
+        display_df = df[cols].rename(columns=col_names)
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            column_config={
+                "차트": st.column_config.LinkColumn("차트", display_text="차트 보기"),
+                "뉴스": st.column_config.LinkColumn("뉴스", display_text="뉴스 보기"),
+            },
+        )
         return
 
+    # 카드뷰
     for _, row in df.iterrows():
         row_code = str(row.get("code", "")).zfill(6)
         star = "⭐ " if row_code in favorite_codes else ""
         name = row.get("name", "-")
         grade = row.get("grade", "-")
-        original_grade = row.get("original_grade", "-")
-        badge = original_grade if grade == "watch_high" else grade
+        original_grade = row.get("original_grade", grade)
+        badge_label = original_grade if grade == "watch_high" else grade
+        badge_cls = BADGE_CLASS.get(grade, "")
+
+        buy_short = (
+            f"{fmt_price_short(row.get('buy_low_raw'))} ~ {fmt_price_short(row.get('buy_high_raw'))}"
+        )
+        stop_short = fmt_price_short(row.get("stop_loss_raw"))
+
         with st.container(border=True):
-            st.markdown(f'''<div class="compact-card-title">{star}{name} <span class="compact-card-muted">({row_code})</span><span class="compact-badge">{badge}</span></div><div class="compact-card-line"><b>현재가</b> {fmt_price(row.get("close"))}</div><div class="compact-card-line"><b>매수</b> {row.get("buy_zone", "-")}</div><div class="compact-card-line"><b>손절</b> {row.get("stop_loss", "-")}</div><div class="compact-card-muted">{row.get("trade_type", "-")}</div><div class="compact-card-links"><a href="{row.get("chart", "")}" target="_blank">📈 차트</a>&nbsp;|&nbsp;<a href="{row.get("news", "")}" target="_blank">📰 뉴스</a></div>''', unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div class="compact-card-title">{star}{name}</div>
+                <div class="compact-card-sub">
+                    {row_code}&nbsp;<span class="compact-badge {badge_cls}">{badge_label}</span>
+                    &nbsp;·&nbsp;{row.get("trade_type", "-")}
+                </div>
+                <div class="compact-card-line"><b>현재가</b> {fmt_price(row.get("close"))}</div>
+                <div class="compact-card-line"><b>매수</b> {buy_short}&nbsp;&nbsp;<b>손절</b> {stop_short}</div>
+                <div class="btn-row">
+                    <a class="btn-link btn-chart" href="{row.get('chart','')}" target="_blank">📈 차트</a>
+                    <a class="btn-link btn-news" href="{row.get('news','')}" target="_blank">📰 뉴스</a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             with st.expander("상세"):
                 if grade == "watch_high":
                     st.write(f"**원래등급:** {original_grade}")
@@ -431,37 +567,33 @@ def show_table(df, cols):
                 st.write(f"**시가총액:** {fmt_number(row.get('marcap'))}원")
 
 
-def show_favorite_summary(df_result, df_watch, base_cols, watch_cols):
-    st.subheader("⭐ 관심종목 빠른 확인")
-    if not favorite_codes:
-        st.write("사이드바에 관심종목 코드를 입력하면 여기에 먼저 표시됩니다.")
-        return
+def get_favorite_df(df_result, df_watch):
     frames = []
-    if not df_result.empty:
+    if df_result is not None and not df_result.empty:
         frames.append(df_result.copy())
-    if not df_watch.empty:
+    if df_watch is not None and not df_watch.empty:
         frames.append(df_watch.copy())
     if not frames:
-        st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
-        return
-    favorite_all = pd.concat(frames, ignore_index=True)
-    favorite_all["code"] = favorite_all["code"].astype(str).str.zfill(6)
-    favorite_df = favorite_all[favorite_all["code"].isin(favorite_codes)]
-    if favorite_df.empty:
-        st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
-        return
-    show_table(favorite_df, watch_cols if "original_grade" in favorite_df.columns else base_cols)
+        return pd.DataFrame()
+    all_df = pd.concat(frames, ignore_index=True)
+    all_df["code"] = all_df["code"].astype(str).str.zfill(6)
+    return all_df[all_df["code"].isin(favorite_codes)]
 
 
+# =========================
+# 메인 실행
+# =========================
 scan_full = st.button("🔍 전체 종목 스캔 시작", type="primary")
 scan_favorites = st.button("⭐ 관심종목만 빠른 재조회")
 
 if scan_full or scan_favorites:
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
+
     with st.expander("종목 리스트 로딩 로그"):
         for log in load_logs or ["로딩 로그가 비어 있습니다."]:
             st.write(log)
+
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
         st.stop()
@@ -479,15 +611,18 @@ if scan_full or scan_favorites:
         if stocks.empty:
             st.warning("입력한 관심종목 코드가 기본 필터를 통과하지 못했거나 종목 리스트에 없습니다.")
             st.stop()
+
     if stocks.empty:
         st.warning("기본 필터 통과 종목이 없습니다.")
         st.stop()
 
     st.success(f"실제 분석 대상: {len(stocks):,}개")
+
     results, watch_high = [], []
     progress = st.progress(0)
     status = st.empty()
     total = len(stocks)
+
     for i, row in enumerate(stocks.itertuples()):
         status.text(f"분석 중... {i + 1}/{total} - {row.Name}")
         progress.progress((i + 1) / total)
@@ -497,38 +632,41 @@ if scan_full or scan_favorites:
                 watch_high.append(result)
             else:
                 results.append(result)
+
     status.text("분석 완료!")
 
-    df_result = pd.DataFrame(results)
-    df_watch = pd.DataFrame(watch_high)
-    base_cols = ["name", "code", "close", "ma5", "ma20", "rsi", "vol_ratio", "pullback", "trade_type", "buy_zone", "stop_loss", "strategy", "reason", "chart", "news", "marcap"]
-    watch_cols = ["name", "code", "original_grade", "close", "ma5", "ma20", "rsi", "vol_ratio", "pullback", "trade_type", "buy_zone", "stop_loss", "strategy", "reason", "chart", "news", "marcap"]
-    col_names = {"name": "종목명", "code": "코드", "original_grade": "원래등급", "close": "현재가", "ma5": "5일선", "ma20": "20일선", "rsi": "RSI", "vol_ratio": "거래량비율(%)", "pullback": "고점대비(%)", "trade_type": "유형", "buy_zone": "매수구간", "stop_loss": "손절가", "strategy": "전략", "reason": "사유", "chart": "차트", "news": "뉴스", "marcap": "시가총액"}
+    df_result = pd.DataFrame(results) if results else pd.DataFrame()
+    df_watch = pd.DataFrame(watch_high) if watch_high else pd.DataFrame()
 
-    show_favorite_summary(df_result, df_watch, base_cols, watch_cols)
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🟢 A등급 진입검토",
+        "🔵 B등급 대기/눌림확인",
+        "🟡 C등급 관심",
+        "👀 20만원↑ 별도관심",
+        "⭐ 관심종목",
+    ])
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["⭐ 관심종목", "🟢 A등급 진입검토", "🔵 B등급 대기/눌림확인", "🟡 C등급 관심", "👀 20만원↑ 별도관심"])
     with tab1:
-        if favorite_codes:
-            frames = []
-            if not df_result.empty:
-                frames.append(df_result.copy())
-            if not df_watch.empty:
-                frames.append(df_watch.copy())
-            if frames:
-                favorite_all = pd.concat(frames, ignore_index=True)
-                favorite_all["code"] = favorite_all["code"].astype(str).str.zfill(6)
-                favorite_df = favorite_all[favorite_all["code"].isin(favorite_codes)]
-                show_table(favorite_df, watch_cols if not favorite_df.empty and "original_grade" in favorite_df.columns else base_cols)
-            else:
-                st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
-        else:
-            st.write("사이드바에 관심종목 코드를 입력해 주세요.")
+        d = df_result[df_result["grade"] == "A"] if not df_result.empty else pd.DataFrame()
+        show_table(d, base_cols)
+
     with tab2:
-        show_table(df_result[df_result["grade"] == "A"], base_cols) if not df_result.empty else st.write("해당 종목 없음")
+        d = df_result[df_result["grade"] == "B"] if not df_result.empty else pd.DataFrame()
+        show_table(d, base_cols)
+
     with tab3:
-        show_table(df_result[df_result["grade"] == "B"], base_cols) if not df_result.empty else st.write("해당 종목 없음")
+        d = df_result[df_result["grade"] == "C"] if not df_result.empty else pd.DataFrame()
+        show_table(d, base_cols)
+
     with tab4:
-        show_table(df_result[df_result["grade"] == "C"], base_cols) if not df_result.empty else st.write("해당 종목 없음")
+        show_table(df_watch, watch_cols)
+
     with tab5:
-        show_table(df_watch, watch_cols) if not df_watch.empty else st.write("해당 종목 없음")
+        if not favorite_codes:
+            st.write("사이드바에 관심종목 코드를 입력해 주세요.")
+        else:
+            fav_df = get_favorite_df(df_result, df_watch)
+            if fav_df.empty:
+                st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
+            else:
+                show_table(fav_df, watch_cols if "original_grade" in fav_df.columns else base_cols)
