@@ -82,9 +82,14 @@ st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
 st.sidebar.divider()
 view_mode = st.sidebar.radio("보기 방식", ["카드뷰", "표뷰"], index=0)
 st.sidebar.divider()
-favorite_input = st.sidebar.text_area("⭐ 관심종목 코드", value="", placeholder="예: 005930,000660,319660")
-favorite_codes = {code.strip().zfill(6) for code in favorite_input.replace("\n", ",").split(",") if code.strip()}
-
+favorite_input = st.sidebar.text_area(
+    "⭐ 관심종목 코드", value="", placeholder="예: 005930,000660,319660"
+)
+favorite_codes = {
+    code.strip().zfill(6)
+    for code in favorite_input.replace("\n", ",").split(",")
+    if code.strip()
+}
 
 # =========================
 # 종목 리스트
@@ -143,7 +148,10 @@ def parse_naver_market_sum_html(html_text):
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+        ),
         "Referer": "https://finance.naver.com/",
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     }
@@ -156,7 +164,10 @@ def load_stock_list():
         seen_codes = set()
         empty_page_count = 0
         for page in range(1, max_page + 1):
-            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+            url = (
+                f"https://finance.naver.com/sise/sise_market_sum.naver"
+                f"?sosok={sosok}&page={page}"
+            )
             try:
                 res = requests.get(url, headers=headers, timeout=10)
                 res.encoding = "euc-kr"
@@ -181,7 +192,9 @@ def load_stock_list():
                     break
 
                 seen_codes.update(page_codes)
-                page_df = page_df[page_df["Code"].isin(new_codes)].drop_duplicates(subset=["Code"])
+                page_df = page_df[page_df["Code"].isin(new_codes)].drop_duplicates(
+                    subset=["Code"]
+                )
                 if not page_df.empty:
                     market_frames.append(page_df)
             except Exception as e:
@@ -189,7 +202,9 @@ def load_stock_list():
                 continue
 
         if market_frames:
-            market_df = pd.concat(market_frames, ignore_index=True).drop_duplicates(subset=["Code"])
+            market_df = pd.concat(market_frames, ignore_index=True).drop_duplicates(
+                subset=["Code"]
+            )
             frames.append(market_df)
             logs.append(f"{market_name}: {len(market_df)}개 로딩")
         else:
@@ -218,8 +233,12 @@ def apply_base_filters(stocks):
     logs.append(f"원자료 정리 후: {len(stocks):,}개 / 최초 {before:,}개")
 
     pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
-    stocks = stocks[~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)]
-    stocks = stocks[~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)]
+    stocks = stocks[
+        ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
+    ]
+    stocks = stocks[
+        ~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)
+    ]
     logs.append(f"ETF/ETN/스팩/리츠/우선주 제외 후: {len(stocks):,}개")
 
     stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
@@ -296,9 +315,12 @@ def calc_stop_loss(trade_type, buy_low, ma20, recent_low):
     return round(stop)
 
 
-def make_result(grade, code, name, close_price, ma5, ma20, rsi, volume_today,
-                volume_5avg, reason, marcap, pullback, trade_type,
-                buy_low, buy_high, stop_loss, strategy, original_grade=None):
+def make_result(
+    grade, code, name, close_price, ma5, ma20, rsi,
+    volume_today, volume_5avg, reason, marcap, pullback,
+    trade_type, buy_low, buy_high, stop_loss, strategy,
+    original_grade=None,
+):
     chart_url, news_url = make_urls(code, name)
     return {
         "grade": grade,
@@ -331,7 +353,7 @@ def analyze_stock(code, name, marcap):
     if df is None or len(df) < 80:
         return None
 
-    # 장중/장후 기준봉 확정
+    # 장중/장후 기준봉 위치 확정
     now = get_kst_now()
     market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
     try:
@@ -339,14 +361,11 @@ def analyze_stock(code, name, marcap):
         prev_pos = latest_pos - 1
         if latest_pos < 60 or prev_pos < 0:
             return None
-        latest = df.iloc[latest_pos]
-        prev = df.iloc[prev_pos]
     except Exception:
         return None
 
-    close_price = latest["Close"]
-
     # ── 조기 탈출: 가격 필터 (지표 계산 전) ──────────────────────
+    close_price = df["Close"].iloc[latest_pos]
     if close_price < PRICE_MIN:
         return None
 
@@ -356,6 +375,10 @@ def analyze_stock(code, name, marcap):
     df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
+    # 지표 계산 후 latest/prev 재할당 (KeyError 방지 핵심)
+    latest = df.iloc[latest_pos]
+    prev = df.iloc[prev_pos]
+
     ma5 = latest["ma5"]
     ma20 = latest["ma20"]
     ma60 = latest["ma60"]
@@ -364,7 +387,7 @@ def analyze_stock(code, name, marcap):
     if pd.isna(ma5) or pd.isna(ma20) or pd.isna(ma60) or pd.isna(rsi):
         return None
 
-    # ── 거래대금 / 거래량 계산 ────────────────────────────────────
+    # ── 거래량 / 거래대금 계산 ────────────────────────────────────
     try:
         ma60_5ago = df.iloc[latest_pos - 5]["ma60"]
         volume_today = latest["Volume"]
@@ -382,12 +405,18 @@ def analyze_stock(code, name, marcap):
     if trade_amount_today < TRADE_AMOUNT_TODAY_MIN:
         return None
     # OR 조건: 둘 중 하나라도 해당하면 거래 죽은 종목
-    if trade_amount_3avg < trade_amount_20avg * 0.5 or trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN:
+    if (
+        trade_amount_3avg < trade_amount_20avg * 0.5
+        or trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN
+    ):
         return None
 
     # ── 과열 / 급등 필터 ──────────────────────────────────────────
     try:
-        surge_3d = ((close_price - df["Close"].iloc[latest_pos - 3]) / df["Close"].iloc[latest_pos - 3]) * 100
+        surge_3d = (
+            (close_price - df["Close"].iloc[latest_pos - 3])
+            / df["Close"].iloc[latest_pos - 3]
+        ) * 100
         today_change = ((close_price - prev["Close"]) / prev["Close"]) * 100
         prev_body = ((prev["Open"] - prev["Close"]) / prev["Open"]) * 100
     except Exception:
@@ -414,36 +443,34 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    # pullback_ok: 핵심 2개만 필수 (sideways/vol_decrease는 entry_a에서 추가 확인)
+    # pullback_ok: 핵심 2개 필수 / sideways·vol_decrease는 entry_a에서 확인
     pullback_ok = -15 <= pullback_pct <= -3 and near_ma20
 
     entry_a = (
-        trend_ok and
-        pullback_ok and
-        sideways and
-        vol_decrease and
-        close_price > prev["Close"] and
-        close_price > ma5 and
-        volume_today >= volume_20avg * 0.8 and
-        40 <= rsi <= 68 and
-        close_price > ma20
+        trend_ok
+        and pullback_ok
+        and sideways
+        and vol_decrease
+        and close_price > prev["Close"]
+        and close_price > ma5
+        and volume_today >= volume_20avg * 0.8
+        and 40 <= rsi <= 68
+        and close_price > ma20
     )
-
     entry_b_safe = (
-        trend_ok and
-        close_price > high_10d and
-        vol_ratio >= 150 and
-        rsi < 70 and
-        close_price <= ma20 * 1.12
+        trend_ok
+        and close_price > high_10d
+        and vol_ratio >= 150
+        and rsi < 70
+        and close_price <= ma20 * 1.12
     )
-
     entry_b_aggressive = (
-        trend_ok and
-        close_price > high_10d and
-        vol_ratio >= 150 and
-        rsi < 72 and
-        close_price <= ma20 * 1.18 and
-        not entry_b_safe  # 명시적 분리
+        trend_ok
+        and close_price > high_10d
+        and vol_ratio >= 150
+        and rsi < 72
+        and close_price <= ma20 * 1.18
+        and not entry_b_safe  # 명시적 분리
     )
 
     # ── 등급 결정 ─────────────────────────────────────────────────
@@ -471,14 +498,14 @@ def analyze_stock(code, name, marcap):
             f"20만원 이상 별도관심 / 원래 등급: {grade} / {reason}",
             marcap, pullback_pct, trade_type,
             buy_low, buy_high, stop_loss, strategy,
-            original_grade=grade
+            original_grade=grade,
         )
 
     return make_result(
         grade, code, name, close_price, ma5, ma20, rsi,
         volume_today, volume_5avg, reason,
         marcap, pullback_pct, trade_type,
-        buy_low, buy_high, stop_loss, strategy
+        buy_low, buy_high, stop_loss, strategy,
     )
 
 
@@ -533,7 +560,8 @@ def show_table(df, cols):
         badge_cls = BADGE_CLASS.get(grade, "")
 
         buy_short = (
-            f"{fmt_price_short(row.get('buy_low_raw'))} ~ {fmt_price_short(row.get('buy_high_raw'))}"
+            f"{fmt_price_short(row.get('buy_low_raw'))}"
+            f" ~ {fmt_price_short(row.get('buy_high_raw'))}"
         )
         stop_short = fmt_price_short(row.get("stop_loss_raw"))
 
@@ -545,11 +573,17 @@ def show_table(df, cols):
                     {row_code}&nbsp;<span class="compact-badge {badge_cls}">{badge_label}</span>
                     &nbsp;·&nbsp;{row.get("trade_type", "-")}
                 </div>
-                <div class="compact-card-line"><b>현재가</b> {fmt_price(row.get("close"))}</div>
-                <div class="compact-card-line"><b>매수</b> {buy_short}&nbsp;&nbsp;<b>손절</b> {stop_short}</div>
+                <div class="compact-card-line">
+                    <b>현재가</b> {fmt_price(row.get("close"))}
+                </div>
+                <div class="compact-card-line">
+                    <b>매수</b> {buy_short}&nbsp;&nbsp;<b>손절</b> {stop_short}
+                </div>
                 <div class="btn-row">
-                    <a class="btn-link btn-chart" href="{row.get('chart','')}" target="_blank">📈 차트</a>
-                    <a class="btn-link btn-news" href="{row.get('news','')}" target="_blank">📰 뉴스</a>
+                    <a class="btn-link btn-chart"
+                       href="{row.get('chart', '')}" target="_blank">📈 차트</a>
+                    <a class="btn-link btn-news"
+                       href="{row.get('news', '')}" target="_blank">📰 뉴스</a>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -669,4 +703,7 @@ if scan_full or scan_favorites:
             if fav_df.empty:
                 st.write("오늘 스크리닝 결과에 포함된 관심종목이 없습니다.")
             else:
-                show_table(fav_df, watch_cols if "original_grade" in fav_df.columns else base_cols)
+                show_table(
+                    fav_df,
+                    watch_cols if "original_grade" in fav_df.columns else base_cols,
+                )
