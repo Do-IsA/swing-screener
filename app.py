@@ -320,6 +320,7 @@ def make_result(
     grade, code, name, close_price, ma5, ma20, rsi,
     volume_today, volume_5avg, reason, marcap, pullback,
     trade_type, buy_low, buy_high, stop_loss, strategy,
+    basis_date,
     original_grade=None,
 ):
     chart_url, news_url = make_urls(code, name)
@@ -345,7 +346,6 @@ def make_result(
         "chart": chart_url,
         "news": news_url,
         "marcap": marcap,
-        "basis_date": basis_date,
     }
 
 
@@ -502,6 +502,7 @@ def analyze_stock(code, name, marcap):
             f"20만원 이상 별도관심 / 원래 등급: {grade} / {reason}",
             marcap, pullback_pct, trade_type,
             buy_low, buy_high, stop_loss, strategy,
+            basis_date,
             original_grade=grade,
         )
 
@@ -509,7 +510,7 @@ def analyze_stock(code, name, marcap):
         grade, code, name, close_price, ma5, ma20, rsi,
         volume_today, volume_5avg, reason,
         marcap, pullback_pct, trade_type,
-        buy_low, buy_high, stop_loss, strategy,
+        buy_low, buy_high, stop_loss, strategy, basis_date,
     )
 
 
