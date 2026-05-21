@@ -345,6 +345,7 @@ def make_result(
         "chart": chart_url,
         "news": news_url,
         "marcap": marcap,
+        "basis_date": basis_date,
     }
 
 
@@ -380,6 +381,8 @@ def analyze_stock(code, name, marcap):
     latest = df.iloc[latest_pos]
     prev = df.iloc[prev_pos]
 
+    basis_date = str(df.index[latest_pos].date())
+    
     ma5 = latest["ma5"]
     ma20 = latest["ma20"]
     ma60 = latest["ma60"]
