@@ -29,25 +29,25 @@ def get_kst_now():
     return datetime.now()
 
 
+now_kst = get_kst_now()
+
 scan_basis_date = "-"
 
 try:
-    sample_code = "005930"
-    sample_df = load_ohlcv(
-        sample_code,
-        (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    sample_df = fdr.DataReader(
+        "005930",
+        (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d"),
     )
 
-    market_closed = now_kst.hour > 15 or (
-        now_kst.hour == 15 and now_kst.minute >= 30
-    )
-
-    latest_pos = len(sample_df) - 1 if market_closed else len(sample_df) - 2
-
-    scan_basis_date = str(sample_df.index[latest_pos].date())
+    if sample_df is not None and len(sample_df) >= 2:
+        market_closed = now_kst.hour > 15 or (
+            now_kst.hour == 15 and now_kst.minute >= 30
+        )
+        latest_pos = len(sample_df) - 1 if market_closed else len(sample_df) - 2
+        scan_basis_date = str(sample_df.index[latest_pos].date())
 
 except Exception:
-    pass
+    scan_basis_date = "-"
 
 st.caption(
     f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
@@ -351,6 +351,7 @@ def make_result(
         "original_grade": original_grade or grade,
         "name": name,
         "code": str(code).zfill(6),
+        "basis_date": basis_date,
         "close": int(close_price),
         "ma5": round(ma5, 0) if pd.notna(ma5) else 0,
         "ma20": round(ma20, 0) if pd.notna(ma20) else 0,
@@ -385,6 +386,8 @@ def analyze_stock(code, name, marcap):
         prev_pos = latest_pos - 1
         if latest_pos < 60 or prev_pos < 0:
             return None
+
+        basis_date = str(df.index[latest_pos].date())
     except Exception:
         return None
 
@@ -403,8 +406,6 @@ def analyze_stock(code, name, marcap):
     latest = df.iloc[latest_pos]
     prev = df.iloc[prev_pos]
 
-    basis_date = str(df.index[latest_pos].date())
-    
     ma5 = latest["ma5"]
     ma20 = latest["ma20"]
     ma60 = latest["ma60"]
@@ -532,7 +533,8 @@ def analyze_stock(code, name, marcap):
         grade, code, name, close_price, ma5, ma20, rsi,
         volume_today, volume_5avg, reason,
         marcap, pullback_pct, trade_type,
-        buy_low, buy_high, stop_loss, strategy, basis_date,
+        buy_low, buy_high, stop_loss, strategy,
+        basis_date,
     )
 
 
@@ -618,6 +620,7 @@ def show_table(df, cols):
             with st.expander("상세"):
                 if grade == "watch_high":
                     st.write(f"**원래등급:** {original_grade}")
+                st.write(f"**기준봉:** {row.get('basis_date', '-')}")
                 st.write(f"**사유:** {row.get('reason', '-')}")
                 st.write(f"**전략:** {row.get('strategy', '-')}")
                 st.write(f"**20일선:** {fmt_price(row.get('ma20'))}")
