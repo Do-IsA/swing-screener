@@ -29,8 +29,30 @@ def get_kst_now():
     return datetime.now()
 
 
-now_kst = get_kst_now()
-st.caption(f"기준일: {now_kst.strftime('%Y-%m-%d')} / KST {now_kst.strftime('%H:%M')}")
+scan_basis_date = "-"
+
+try:
+    sample_code = "005930"
+    sample_df = load_ohlcv(
+        sample_code,
+        (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    )
+
+    market_closed = now_kst.hour > 15 or (
+        now_kst.hour == 15 and now_kst.minute >= 30
+    )
+
+    latest_pos = len(sample_df) - 1 if market_closed else len(sample_df) - 2
+
+    scan_basis_date = str(sample_df.index[latest_pos].date())
+
+except Exception:
+    pass
+
+st.caption(
+    f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
+    f"/ 실제 분석봉: {scan_basis_date}"
+)
 
 st.markdown(
     """
