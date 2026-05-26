@@ -114,6 +114,13 @@ favorite_codes = {
     if code.strip()
 }
 
+st.sidebar.divider()
+
+if st.sidebar.button("🔄 데이터 캐시 초기화"):
+    st.cache_data.clear()
+    st.rerun()
+
+
 # =========================
 # 종목 리스트
 # =========================
@@ -276,6 +283,23 @@ def load_ohlcv(code, start):
         return fdr.DataReader(code, start)
     except Exception:
         return None
+
+def get_basis_date_for_code(code):
+    start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
+    df = load_ohlcv(code, start)
+
+    if df is None or len(df) < 2:
+        return "-"
+
+    now = get_kst_now()
+    market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+
+    try:
+        latest_pos = len(df) - 1 if market_closed else len(df) - 2
+        return str(df.index[latest_pos].date())
+    except Exception:
+        return "-"
+
 
 
 def make_urls(code, name):
@@ -679,6 +703,9 @@ if scan_full or scan_favorites:
     if stocks.empty:
         st.warning("기본 필터 통과 종목이 없습니다.")
         st.stop()
+
+    basis_date_preview = get_basis_date_for_code(stocks.iloc[0]["Code"])
+    st.info(f"이번 스캔 기준봉: {basis_date_preview}")
 
     st.success(f"실제 분석 대상: {len(stocks):,}개")
 
