@@ -401,7 +401,10 @@ def analyze_stock(code, name, marcap):
     df = load_ohlcv(code, start)
     if df is None or len(df) < 80:
         return None
-
+    st.write(
+    code,
+    df.index[-3:],
+)
     # 장중/장후 기준봉 위치 확정
     now = get_kst_now()
     market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
