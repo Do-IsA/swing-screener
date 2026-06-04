@@ -103,7 +103,7 @@ st.sidebar.write(f"추가 매수 (20%): **{int(seed * 0.2):,}원**")
 st.sidebar.write(f"최대 비중 (50%): **{int(seed * 0.5):,}원**")
 st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
 st.sidebar.divider()
-view_mode = st.sidebar.radio("보기 방식", ["카드뷰", "표뷰"], index=0)
+
 st.sidebar.divider()
 favorite_input = st.sidebar.text_area(
     "⭐ 관심종목 코드", value="", placeholder="예: 005930,000660,319660"
@@ -401,10 +401,7 @@ def analyze_stock(code, name, marcap):
     df = load_ohlcv(code, start)
     if df is None or len(df) < 80:
         return None
-    st.write(
-    code,
-    df.index[-3:],
-)
+    
     # 장중/장후 기준봉 위치 확정
     now = get_kst_now()
     market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
@@ -593,70 +590,16 @@ def show_table(df, cols):
         st.write("해당 종목 없음")
         return
 
-    if view_mode == "표뷰":
-        display_df = df[cols].rename(columns=col_names)
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            column_config={
-                "차트": st.column_config.LinkColumn("차트", display_text="차트 보기"),
-                "뉴스": st.column_config.LinkColumn("뉴스", display_text="뉴스 보기"),
-            },
-        )
-        return
+    display_df = df[cols].rename(columns=col_names)
 
-    # 카드뷰
-    for _, row in df.iterrows():
-        row_code = str(row.get("code", "")).zfill(6)
-        star = "⭐ " if row_code in favorite_codes else ""
-        name = row.get("name", "-")
-        grade = row.get("grade", "-")
-        original_grade = row.get("original_grade", grade)
-        badge_label = original_grade if grade == "watch_high" else grade
-        badge_cls = BADGE_CLASS.get(grade, "")
-
-        buy_short = (
-            f"{fmt_price_short(row.get('buy_low_raw'))}"
-            f" ~ {fmt_price_short(row.get('buy_high_raw'))}"
-        )
-        stop_short = fmt_price_short(row.get("stop_loss_raw"))
-
-        with st.container(border=True):
-            st.markdown(
-                f"""
-                <div class="compact-card-title">{star}{name}</div>
-                <div class="compact-card-sub">
-                    {row_code}&nbsp;<span class="compact-badge {badge_cls}">{badge_label}</span>
-                    &nbsp;·&nbsp;{row.get("trade_type", "-")}
-                </div>
-                <div class="compact-card-line">
-                    <b>현재가</b> {fmt_price(row.get("close"))}
-                </div>
-                <div class="compact-card-line">
-                    <b>매수</b> {buy_short}&nbsp;&nbsp;<b>손절</b> {stop_short}
-                </div>
-                <div class="btn-row">
-                    <a class="btn-link btn-chart"
-                       href="{row.get('chart', '')}" target="_blank">📈 차트</a>
-                    <a class="btn-link btn-news"
-                       href="{row.get('news', '')}" target="_blank">📰 뉴스</a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            with st.expander("상세"):
-                if grade == "watch_high":
-                    st.write(f"**원래등급:** {original_grade}")
-                st.write(f"**기준봉:** {row.get('basis_date', '-')}")
-                st.write(f"**사유:** {row.get('reason', '-')}")
-                st.write(f"**전략:** {row.get('strategy', '-')}")
-                st.write(f"**20일선:** {fmt_price(row.get('ma20'))}")
-                st.write(f"**5일선:** {fmt_price(row.get('ma5'))}")
-                st.write(f"**RSI:** {row.get('rsi', '-')}")
-                st.write(f"**거래량비율:** {row.get('vol_ratio', '-')}%")
-                st.write(f"**고점대비:** {row.get('pullback', '-')}%")
-                st.write(f"**시가총액:** {fmt_number(row.get('marcap'))}원")
-
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        column_config={
+            "차트": st.column_config.LinkColumn("차트", display_text="차트 보기"),
+            "뉴스": st.column_config.LinkColumn("뉴스", display_text="뉴스 보기"),
+        },
+    )
 
 def get_favorite_df(df_result, df_watch):
     frames = []
@@ -669,31 +612,69 @@ def get_favorite_df(df_result, df_watch):
     all_df = pd.concat(frames, ignore_index=True)
     all_df["code"] = all_df["code"].astype(str).str.zfill(6)
     return all_df[all_df["code"].isin(favorite_codes)]
+    
+def make_copy_text(df):
+    if df is None or df.empty:
+        return "해당 종목 없음"
+
+    lines = []
+
+    for _, row in df.iterrows():
+        lines.append(
+            f"[{row['grade']}] {row['name']} ({row['code']})\n"
+            f"현재가: {row['close']:,}원\n"
+            f"매수구간: {row['buy_zone']}\n"
+            f"손절가: {row['stop_loss']}\n"
+            f"사유: {row['reason']}\n"
+        )
+
+    return "\n".join(lines)
+
+import streamlit.components.v1 as components
 
 
+def copy_button(text, key):
+    safe_text = text.replace("`", "'")
+
+    components.html(
+        f"""
+        <button onclick="
+        navigator.clipboard.writeText(`{safe_text}`);
+        this.innerText='복사완료!';
+        ">
+        📋 결과 복사
+        </button>
+        """,
+        height=40,
+    )
 # =========================
 # 메인 실행
 # =========================
-scan_full = st.button("🔍 전체 종목 스캔 시작", type="primary")
-scan_favorites = st.button("⭐ 관심종목만 빠른 재조회")
+col_scan1, col_scan2 = st.columns(2)
+
+with col_scan1:
+    scan_full = st.button(
+        "🚀 전체 종목 스캔",
+        use_container_width=True,
+        type="primary"
+    )
+
+with col_scan2:
+    scan_favorites = st.button(
+        "⭐ 관심종목 스캔",
+        use_container_width=True
+    )
 
 if scan_full or scan_favorites:
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
-
-    with st.expander("종목 리스트 로딩 로그"):
-        for log in load_logs or ["로딩 로그가 비어 있습니다."]:
-            st.write(log)
 
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
         st.stop()
 
     stocks, filter_logs = apply_base_filters(stocks)
-    with st.expander("기본 필터 적용 로그"):
-        for log in filter_logs or ["필터 로그가 비어 있습니다."]:
-            st.write(log)
-
+    
     if scan_favorites:
         if not favorite_codes:
             st.warning("관심종목 코드가 없습니다. 사이드바에 종목코드를 먼저 입력해 주세요.")
@@ -708,7 +689,9 @@ if scan_full or scan_favorites:
         st.stop()
 
     basis_date_preview = get_basis_date_for_code(stocks.iloc[0]["Code"])
-    st.info(f"이번 스캔 기준봉: {basis_date_preview}")
+    st.success(
+        f"📅 분석 기준봉 : {basis_date_preview}"
+    )
 
     st.success(f"실제 분석 대상: {len(stocks):,}개")
 
@@ -731,28 +714,42 @@ if scan_full or scan_favorites:
 
     df_result = pd.DataFrame(results) if results else pd.DataFrame()
     df_watch = pd.DataFrame(watch_high) if watch_high else pd.DataFrame()
-
+    
+    a_count = len(df_result[df_result["grade"] == "A"]) if not df_result.empty else 0
+    b_count = len(df_result[df_result["grade"] == "B"]) if not df_result.empty else 0
+    c_count = len(df_result[df_result["grade"] == "C"]) if not df_result.empty else 0
+    watch_count = len(df_watch)
+    
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🟢 A등급 진입검토",
-        "🔵 B등급 대기/눌림확인",
-        "🟡 C등급 관심",
-        "👀 20만원↑ 별도관심",
-        "⭐ 관심종목",
+        f"🟢 A등급 ({a_count})",
+        f"🔵 B등급 ({b_count})",
+        f"🟡 C등급 ({c_count})",
+        f"👀 20만원↑ ({watch_count})",
+        f"⭐ 관심종목 ({len(favorite_codes)})",
     ])
 
     with tab1:
-        d = df_result[df_result["grade"] == "A"] if not df_result.empty else pd.DataFrame()
-        show_table(d, base_cols)
+    d = df_result[df_result["grade"] == "A"] if not df_result.empty else pd.DataFrame()
+
+    copy_button(
+        make_copy_text(d),
+        "copy_a"
+    )
+
+    show_table(d, base_cols)
 
     with tab2:
         d = df_result[df_result["grade"] == "B"] if not df_result.empty else pd.DataFrame()
+        copy_button(make_copy_text(d), "copy_b")
         show_table(d, base_cols)
 
     with tab3:
         d = df_result[df_result["grade"] == "C"] if not df_result.empty else pd.DataFrame()
+        copy_button(make_copy_text(d), "copy_c")
         show_table(d, base_cols)
 
     with tab4:
+        copy_button(make_copy_text(df_watch), "copy_watch")
         show_table(df_watch, watch_cols)
 
     with tab5:
@@ -767,3 +764,4 @@ if scan_full or scan_favorites:
                     fav_df,
                     watch_cols if "original_grade" in fav_df.columns else base_cols,
                 )
+                copy_button(make_copy_text(fav_df), "copy_fav")
