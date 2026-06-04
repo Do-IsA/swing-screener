@@ -729,14 +729,14 @@ if scan_full or scan_favorites:
     ])
 
     with tab1:
-    d = df_result[df_result["grade"] == "A"] if not df_result.empty else pd.DataFrame()
+        d = df_result[df_result["grade"] == "A"] if not df_result.empty else pd.DataFrame()
+    
+        copy_button(
+            make_copy_text(d),
+            "copy_a"
+        )
 
-    copy_button(
-        make_copy_text(d),
-        "copy_a"
-    )
-
-    show_table(d, base_cols)
+        show_table(d, base_cols)
 
     with tab2:
         d = df_result[df_result["grade"] == "B"] if not df_result.empty else pd.DataFrame()
