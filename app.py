@@ -369,10 +369,8 @@ def analyze_stock(code, name, marcap):
         return None
     
     # 장중/장후 기준봉 위치 확정
-    now = get_kst_now()
-    market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
     try:
-        latest_pos = len(df) - 1 if market_closed else len(df) - 2
+        latest_pos = get_latest_pos(df)
         prev_pos = latest_pos - 1
         if latest_pos < 60 or prev_pos < 0:
             return None
@@ -651,11 +649,6 @@ if scan_full or scan_favorites:
     if stocks.empty:
         st.warning("기본 필터 통과 종목이 없습니다.")
         st.stop()
-
-    basis_date_preview = get_basis_date_for_code(stocks.iloc[0]["Code"])
-    st.success(
-        f"📅 분석 기준봉 : {basis_date_preview}"
-    )
 
     st.success(f"실제 분석 대상: {len(stocks):,}개")
 
