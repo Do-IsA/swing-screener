@@ -30,24 +30,6 @@ def get_kst_now():
 
 
 now_kst = get_kst_now()
-
-scan_basis_date = "-"
-
-try:
-    sample_df = fdr.DataReader(
-        "005930",
-        (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d"),
-    )
-
-    if sample_df is not None and len(sample_df) >= 2:
-        market_closed = now_kst.hour > 15 or (
-            now_kst.hour == 15 and now_kst.minute >= 30
-        )
-        latest_pos = len(sample_df) - 1 if market_closed else len(sample_df) - 2
-        scan_basis_date = str(sample_df.index[latest_pos].date())
-
-except Exception:
-    scan_basis_date = "-"
     
 scan_basis_date = get_global_basis_date()
 
@@ -282,31 +264,26 @@ def get_latest_pos(df):
     )
 
     return len(df) - 1 if market_closed else len(df) - 2
-    
-def get_basis_date_for_code(code):
-    start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
 
-    df = load_ohlcv(code, start)
-
-    if df is None or len(df) < 2:
-        return "-"
-
+def get_global_basis_date():
     try:
+        start = (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d")
+        df = load_ohlcv("005930", start)
+
+        if df is None or len(df) < 2:
+            return "-"
+
         latest_pos = get_latest_pos(df)
         return str(df.index[latest_pos].date())
+
     except Exception:
         return "-"
-
-
 
 def make_urls(code, name):
     return (
         f"https://finance.naver.com/item/main.naver?code={code}",
         f"https://search.naver.com/search.naver?where=news&query={quote(name)}",
     )
-
-
-
 
 def calc_buy_zone(trade_type, close_price, ma20, high_10d):
     if trade_type == "눌림형":
@@ -332,7 +309,6 @@ def make_result(
     grade, code, name, close_price, ma5, ma20, rsi,
     volume_today, volume_5avg, reason, marcap, pullback,
     trade_type, buy_low, buy_high, stop_loss, strategy,
-    basis_date,
     original_grade=None,
 ):
     chart_url, news_url = make_urls(code, name)
@@ -375,7 +351,6 @@ def analyze_stock(code, name, marcap):
         if latest_pos < 60 or prev_pos < 0:
             return None
 
-        basis_date = str(df.index[latest_pos].date())
     except Exception:
         return None
 
@@ -513,7 +488,6 @@ def analyze_stock(code, name, marcap):
             f"20만원 이상 별도관심 / 원래 등급: {grade} / {reason}",
             marcap, pullback_pct, trade_type,
             buy_low, buy_high, stop_loss, strategy,
-            basis_date,
             original_grade=grade,
         )
 
@@ -522,7 +496,6 @@ def analyze_stock(code, name, marcap):
         volume_today, volume_5avg, reason,
         marcap, pullback_pct, trade_type,
         buy_low, buy_high, stop_loss, strategy,
-        basis_date,
     )
 
 
