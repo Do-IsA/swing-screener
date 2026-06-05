@@ -53,7 +53,7 @@ st.caption(
     f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
     f"/ 실제 분석봉: {scan_basis_date}"
 )
-st.write(sample_df.tail())
+
 st.markdown(
     """
     <style>
@@ -397,6 +397,8 @@ def make_result(
 
 
 def analyze_stock(code, name, marcap):
+    if code == "005930":
+    st.write(df.tail(10))
     start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
     df = load_ohlcv(code, start)
     if df is None or len(df) < 80:
