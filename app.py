@@ -551,13 +551,23 @@ def make_copy_text(df):
 
     lines = []
     for _, row in df.iterrows():
-        lines.append(
-            f"[{row['grade']}] {row['name']} ({row['code']})\n"
-            f"현재가: {row['close']:,}원\n"
-            f"매수구간: {row['buy_zone']}\n"
-            f"손절가: {row['stop_loss']}\n"
-            f"사유: {row['reason']}\n"
-        )
+        grade = row.get("original_grade", row["grade"])
+        lines.append("\t".join([
+            str(row.get("basis_date", "")),
+            row["name"],
+            row["code"],
+            grade,
+            row["trade_type"],
+            str(row["close"]),
+            str(int(row["ma20"])),
+            str(row["rsi"]),
+            str(row["vol_ratio"]),
+            str(row["pullback"]),
+            row["buy_zone"],
+            row["stop_loss"],
+            "",   # 익일종가(확인용) — 직접 입력
+            "",   # 진입가 — 직접 입력
+        ]))
     return "\n".join(lines)
 
 
