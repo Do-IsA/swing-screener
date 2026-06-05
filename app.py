@@ -397,8 +397,6 @@ def make_result(
 
 
 def analyze_stock(code, name, marcap):
-    if code == "005930":
-        st.write(df.tail(10))
     start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
     df = load_ohlcv(code, start)
     if df is None or len(df) < 80:
