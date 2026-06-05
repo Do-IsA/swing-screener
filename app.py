@@ -53,7 +53,7 @@ st.caption(
     f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
     f"/ 실제 분석봉: {scan_basis_date}"
 )
-
+st.write(sample_df.tail())
 st.markdown(
     """
     <style>
