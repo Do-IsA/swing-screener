@@ -48,6 +48,8 @@ try:
 
 except Exception:
     scan_basis_date = "-"
+    
+scan_basis_date = get_global_basis_date()
 
 st.caption(
     f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
@@ -58,19 +60,6 @@ st.markdown(
     """
     <style>
     div[data-testid="stVerticalBlockBorderWrapper"] {padding:0.55rem 0.65rem!important;border-radius:0.7rem!important;}
-    .compact-card-title {font-size:1.0rem;font-weight:700;line-height:1.3;margin-bottom:0.1rem;}
-    .compact-card-sub {font-size:0.78rem;color:#888;line-height:1.3;margin-bottom:0.25rem;}
-    .compact-card-line {font-size:0.84rem;line-height:1.45;margin:0.06rem 0;}
-    .compact-card-muted {font-size:0.78rem;color:#777;line-height:1.3;margin-top:0.1rem;}
-    .compact-badge {display:inline-block;padding:0.05rem 0.4rem;border-radius:0.4rem;font-size:0.72rem;margin-left:0.3rem;vertical-align:middle;font-weight:600;}
-    .badge-A {background:#d4edda;color:#155724;}
-    .badge-B {background:#cce5ff;color:#004085;}
-    .badge-C {background:#fff3cd;color:#856404;}
-    .badge-W {background:#f8d7da;color:#721c24;}
-    .btn-row {display:flex;gap:0.5rem;margin-top:0.4rem;}
-    .btn-link {flex:1;text-align:center;padding:0.4rem 0;border-radius:0.5rem;text-decoration:none;font-size:0.82rem;font-weight:500;}
-    .btn-chart {background:#e8f4fd;color:#0056b3;}
-    .btn-news {background:#f0f4e8;color:#3d6b1e;}
     div[data-testid="stExpander"] details {font-size:0.82rem;}
     </style>
     """,
@@ -283,19 +272,27 @@ def load_ohlcv(code, start):
         return fdr.DataReader(code, start)
     except Exception:
         return None
+        
+def get_latest_pos(df):
+    now = get_kst_now()
 
+    market_closed = (
+        now.hour > 15
+        or (now.hour == 15 and now.minute >= 30)
+    )
+
+    return len(df) - 1 if market_closed else len(df) - 2
+    
 def get_basis_date_for_code(code):
     start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
+
     df = load_ohlcv(code, start)
 
     if df is None or len(df) < 2:
         return "-"
 
-    now = get_kst_now()
-    market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
-
     try:
-        latest_pos = len(df) - 1 if market_closed else len(df) - 2
+        latest_pos = get_latest_pos(df)
         return str(df.index[latest_pos].date())
     except Exception:
         return "-"
@@ -309,37 +306,6 @@ def make_urls(code, name):
     )
 
 
-def fmt_price(value):
-    try:
-        if pd.isna(value):
-            return "-"
-        return f"{int(value):,}원"
-    except Exception:
-        return "-"
-
-
-def fmt_price_short(value):
-    """모바일 카드용 축약 가격 표시"""
-    try:
-        if pd.isna(value):
-            return "-"
-        v = int(value)
-        if v >= 1_000_000:
-            return f"{v / 1_000_000:.1f}M"
-        if v >= 1_000:
-            return f"{v / 1_000:.0f}K"
-        return str(v)
-    except Exception:
-        return "-"
-
-
-def fmt_number(value):
-    try:
-        if pd.isna(value):
-            return "-"
-        return f"{int(value):,}"
-    except Exception:
-        return "-"
 
 
 def calc_buy_zone(trade_type, close_price, ma20, high_10d):
@@ -581,8 +547,6 @@ watch_cols = [
     "name", "code", "original_grade", "close", "ma5", "ma20", "rsi", "vol_ratio", "pullback",
     "trade_type", "buy_zone", "stop_loss", "strategy", "reason", "chart", "news", "marcap",
 ]
-
-BADGE_CLASS = {"A": "badge-A", "B": "badge-B", "C": "badge-C", "watch_high": "badge-W"}
 
 
 def show_table(df, cols):
