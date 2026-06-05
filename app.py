@@ -59,11 +59,13 @@ def load_ohlcv(code, start):
 
 def get_latest_pos(df):
     now = get_kst_now()
+    before_open = now.hour < 9
     market_closed = (
         now.hour > 15
         or (now.hour == 15 and now.minute >= 30)
     )
-    return len(df) - 1 if market_closed else len(df) - 2
+    # 장 전(~09:00)이면 오늘 봉이 아직 없으므로 전일 봉(df[-1])이 최신
+    return len(df) - 1 if (market_closed or before_open) else len(df) - 2
 
 
 def get_global_basis_date():
