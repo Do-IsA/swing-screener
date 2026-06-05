@@ -23,15 +23,67 @@ st.set_page_config(page_title="스윙 종목 스크리너", layout="wide")
 st.title("📈 스윙 종목 스크리너")
 
 
+# =========================
+# 핵심 필터 기준
+# =========================
+PRICE_MIN = 30_000
+HIGH_PRICE_THRESHOLD = 200_000
+MARCAP_MIN = 300_000_000_000
+TRADE_AMOUNT_20AVG_MIN = 10_000_000_000
+TRADE_AMOUNT_TODAY_MIN = 5_000_000_000
+
+EXCLUDE_KEYWORDS = [
+    "스팩", "SPAC", "리츠", "ETN", "ETF", "액티브",
+    "인버스", "레버리지", "선물",
+    "KODEX", "TIGER", "ACE", "SOL", "RISE", "PLUS", "HANARO",
+    "KBSTAR", "ARIRANG", "KOSEF", "TIMEFOLIO", "TIME", "TREX", "마이티",
+]
+
+
+# =========================
+# 유틸 함수 (실행 코드보다 먼저 정의)
+# =========================
 def get_kst_now():
     if ZoneInfo:
         return datetime.now(ZoneInfo("Asia/Seoul"))
     return datetime.now()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_ohlcv(code, start):
+    try:
+        return fdr.DataReader(code, start)
+    except Exception:
+        return None
+
+
+def get_latest_pos(df):
+    now = get_kst_now()
+    market_closed = (
+        now.hour > 15
+        or (now.hour == 15 and now.minute >= 30)
+    )
+    return len(df) - 1 if market_closed else len(df) - 2
+
+
+def get_global_basis_date():
+    try:
+        start = (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d")
+        df = load_ohlcv("005930", start)
+        if df is None or len(df) < 2:
+            return "-"
+        latest_pos = get_latest_pos(df)
+        return str(df.index[latest_pos].date())
+    except Exception:
+        return "-"
+
+
+# =========================
+# 페이지 상단 — 기준시간 표시
+# =========================
 now_kst = get_kst_now()
-    
 scan_basis_date = get_global_basis_date()
+basis_date = scan_basis_date  # analyze_stock() 에서 전역으로 참조
 
 st.caption(
     f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
@@ -48,21 +100,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# =========================
-# 핵심 필터 기준
-# =========================
-PRICE_MIN = 30_000
-HIGH_PRICE_THRESHOLD = 200_000
-MARCAP_MIN = 300_000_000_000
-TRADE_AMOUNT_20AVG_MIN = 10_000_000_000
-TRADE_AMOUNT_TODAY_MIN = 5_000_000_000
-
-EXCLUDE_KEYWORDS = [
-    "스팩", "SPAC", "리츠", "ETN", "ETF", "액티브",
-    "인버스", "레버리지", "선물",
-    "KODEX", "TIGER", "ACE", "SOL", "RISE", "PLUS", "HANARO",
-    "KBSTAR", "ARIRANG", "KOSEF", "TIMEFOLIO", "TIME", "TREX", "마이티",
-]
 
 # =========================
 # 사이드바
@@ -248,37 +285,6 @@ def apply_base_filters(stocks):
     return stocks.reset_index(drop=True), logs
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_ohlcv(code, start):
-    try:
-        return fdr.DataReader(code, start)
-    except Exception:
-        return None
-        
-def get_latest_pos(df):
-    now = get_kst_now()
-
-    market_closed = (
-        now.hour > 15
-        or (now.hour == 15 and now.minute >= 30)
-    )
-
-    return len(df) - 1 if market_closed else len(df) - 2
-
-def get_global_basis_date():
-    try:
-        start = (get_kst_now() - timedelta(days=10)).strftime("%Y-%m-%d")
-        df = load_ohlcv("005930", start)
-
-        if df is None or len(df) < 2:
-            return "-"
-
-        latest_pos = get_latest_pos(df)
-        return str(df.index[latest_pos].date())
-
-    except Exception:
-        return "-"
-
 def make_urls(code, name):
     return (
         f"https://finance.naver.com/item/main.naver?code={code}",
@@ -343,29 +349,24 @@ def analyze_stock(code, name, marcap):
     df = load_ohlcv(code, start)
     if df is None or len(df) < 80:
         return None
-    
-    # 장중/장후 기준봉 위치 확정
+
     try:
         latest_pos = get_latest_pos(df)
         prev_pos = latest_pos - 1
         if latest_pos < 60 or prev_pos < 0:
             return None
-
     except Exception:
         return None
 
-    # ── 조기 탈출: 가격 필터 (지표 계산 전) ──────────────────────
     close_price = df["Close"].iloc[latest_pos]
     if close_price < PRICE_MIN:
         return None
 
-    # ── 지표 계산 ─────────────────────────────────────────────────
     df["ma5"] = SMAIndicator(df["Close"], window=5).sma_indicator()
     df["ma20"] = SMAIndicator(df["Close"], window=20).sma_indicator()
     df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
     df["rsi"] = RSIIndicator(df["Close"], window=14).rsi()
 
-    # 지표 계산 후 latest/prev 재할당 (KeyError 방지 핵심)
     latest = df.iloc[latest_pos]
     prev = df.iloc[prev_pos]
 
@@ -377,7 +378,6 @@ def analyze_stock(code, name, marcap):
     if pd.isna(ma5) or pd.isna(ma20) or pd.isna(ma60) or pd.isna(rsi):
         return None
 
-    # ── 거래량 / 거래대금 계산 ────────────────────────────────────
     try:
         ma60_5ago = df.iloc[latest_pos - 5]["ma60"]
         volume_today = latest["Volume"]
@@ -389,19 +389,16 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    # ── 거래대금 필터 ─────────────────────────────────────────────
     if trade_amount_20avg < TRADE_AMOUNT_20AVG_MIN:
         return None
     if trade_amount_today < TRADE_AMOUNT_TODAY_MIN:
         return None
-    # OR 조건: 둘 중 하나라도 해당하면 거래 죽은 종목
     if (
         trade_amount_3avg < trade_amount_20avg * 0.5
         and trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN
     ):
         return None
 
-    # ── 과열 / 급등 필터 ──────────────────────────────────────────
     try:
         surge_3d = (
             (close_price - df["Close"].iloc[latest_pos - 3])
@@ -417,7 +414,6 @@ def analyze_stock(code, name, marcap):
     if prev_body >= 3 and today_change < 2:
         return None
 
-    # ── 추세 / 눌림 조건 계산 ─────────────────────────────────────
     trend_ok = close_price > ma20 and ma20 > ma60 and ma60 > ma60_5ago
 
     try:
@@ -433,7 +429,6 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
-    # pullback_ok: 핵심 2개 필수 / sideways·vol_decrease는 entry_a에서 확인
     pullback_ok = -15 <= pullback_pct <= -3 and near_ma20
 
     entry_a = (
@@ -460,10 +455,9 @@ def analyze_stock(code, name, marcap):
         and vol_ratio >= 150
         and rsi < 72
         and close_price <= ma20 * 1.18
-        and not entry_b_safe  # 명시적 분리
+        and not entry_b_safe
     )
 
-    # ── 등급 결정 ─────────────────────────────────────────────────
     if entry_a:
         grade, trade_type, reason = "A", "눌림형", "눌림 후 재상승"
     elif entry_b_safe:
@@ -480,7 +474,6 @@ def analyze_stock(code, name, marcap):
     buy_low, buy_high, strategy = calc_buy_zone(trade_type, close_price, ma20, high_10d)
     stop_loss = calc_stop_loss(trade_type, buy_low, ma20, recent_low)
 
-    # ── 20만원 이상 watch_high 분류 ───────────────────────────────
     if close_price >= HIGH_PRICE_THRESHOLD:
         return make_result(
             "watch_high", code, name, close_price, ma5, ma20, rsi,
@@ -536,6 +529,7 @@ def show_table(df, cols):
         },
     )
 
+
 def get_favorite_df(df_result, df_watch):
     frames = []
     if df_result is not None and not df_result.empty:
@@ -547,13 +541,13 @@ def get_favorite_df(df_result, df_watch):
     all_df = pd.concat(frames, ignore_index=True)
     all_df["code"] = all_df["code"].astype(str).str.zfill(6)
     return all_df[all_df["code"].isin(favorite_codes)]
-    
+
+
 def make_copy_text(df):
     if df is None or df.empty:
         return "해당 종목 없음"
 
     lines = []
-
     for _, row in df.iterrows():
         lines.append(
             f"[{row['grade']}] {row['name']} ({row['code']})\n"
@@ -562,15 +556,14 @@ def make_copy_text(df):
             f"손절가: {row['stop_loss']}\n"
             f"사유: {row['reason']}\n"
         )
-
     return "\n".join(lines)
+
 
 import streamlit.components.v1 as components
 
 
 def copy_button(text, key):
     safe_text = text.replace("`", "'")
-
     components.html(
         f"""
         <button onclick="
@@ -582,6 +575,8 @@ def copy_button(text, key):
         """,
         height=40,
     )
+
+
 # =========================
 # 메인 실행
 # =========================
@@ -609,7 +604,7 @@ if scan_full or scan_favorites:
         st.stop()
 
     stocks, filter_logs = apply_base_filters(stocks)
-    
+
     if scan_favorites:
         if not favorite_codes:
             st.warning("관심종목 코드가 없습니다. 사이드바에 종목코드를 먼저 입력해 주세요.")
@@ -644,12 +639,12 @@ if scan_full or scan_favorites:
 
     df_result = pd.DataFrame(results) if results else pd.DataFrame()
     df_watch = pd.DataFrame(watch_high) if watch_high else pd.DataFrame()
-    
+
     a_count = len(df_result[df_result["grade"] == "A"]) if not df_result.empty else 0
     b_count = len(df_result[df_result["grade"] == "B"]) if not df_result.empty else 0
     c_count = len(df_result[df_result["grade"] == "C"]) if not df_result.empty else 0
     watch_count = len(df_watch)
-    
+
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         f"🟢 A등급 ({a_count})",
         f"🔵 B등급 ({b_count})",
@@ -660,12 +655,7 @@ if scan_full or scan_favorites:
 
     with tab1:
         d = df_result[df_result["grade"] == "A"] if not df_result.empty else pd.DataFrame()
-    
-        copy_button(
-            make_copy_text(d),
-            "copy_a"
-        )
-
+        copy_button(make_copy_text(d), "copy_a")
         show_table(d, base_cols)
 
     with tab2:
