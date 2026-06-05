@@ -310,6 +310,7 @@ def calc_stop_loss(trade_type, buy_low, ma20, recent_low):
         stop = min(buy_low * 0.97, recent_low * 0.99)
     else:
         stop = recent_low * 0.98
+    stop = min(stop, buy_low * 0.99)  # 손절가는 항상 매수하단보다 낮게
     return round(stop)
 
 
