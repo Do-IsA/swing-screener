@@ -565,6 +565,7 @@ if scan_full or scan_favorites:
         st.stop()
 
     stocks, filter_logs = apply_base_filters(stocks)
+    st.write("필터링 상세 로그:", filter_logs)
 
     if scan_favorites:
         if not favorite_codes:
