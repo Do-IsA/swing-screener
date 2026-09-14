@@ -538,6 +538,7 @@ if scan_full or scan_favorites:
 
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
+        st.write("발생한 에러 로그:", load_logs)  # <--- 이 줄 추가
         st.stop()
 
     stocks, filter_logs = apply_base_filters(stocks)
