@@ -476,7 +476,7 @@ if scan_full or scan_favorites:
     for i, row in enumerate(stocks.itertuples()):
         status.text(f"분석 중... {i + 1}/{total} - {row.Name}")
         progress.progress((i + 1) / total)
-        result = analyze_stock(code=row.Code, name=row.Name, marcap=row.Marcap)
+        result = analyze_stock(code=row.Code, name=row.Name, marcap=getattr(row, "Marcap", 0))
         if result:
             if result["grade"] == "watch_high":
                 watch_high.append(result)
