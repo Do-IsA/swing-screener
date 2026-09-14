@@ -131,21 +131,44 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 def load_stock_list():
     logs = []
     try:
-        # 1. FDR로 종목코드와 이름표(Name) 가져오기 (차단 없음, 즉시 응답)
+        # 1. FDR로 종목코드와 이름표(Name) 가져오기 (차단 없음)
         df_names = fdr.StockListing("KRX")[["Code", "Name"]]
         df_names["Code"] = df_names["Code"].astype(str).str.zfill(6)
         
-        # 2. pykrx로 기준일자(최근 거래일)의 시가총액과 종가 가져오기
-        target_date = scan_basis_date.replace("-", "") if scan_basis_date != "-" else get_kst_now().strftime("%Y%m%d")
+        # 2. pykrx로 최근 거래일의 시가총액과 종가 가져오기
+        # 장중이거나 휴일이라 오늘 데이터가 비어있으면, 값이 나올 때까지 최대 10일 전으로 거슬러 올라감
+        target_date_obj = get_kst_now()
+        df_cap = pd.DataFrame()
         
-        df_kospi = stock.get_market_cap_by_ticker(target_date, market="KOSPI")
-        df_kosdaq = stock.get_market_cap_by_ticker(target_date, market="KOSDAQ")
+        for _ in range(10): 
+            dt_str = target_date_obj.strftime("%Y%m%d")
+            try:
+                df_kospi = stock.get_market_cap_by_ticker(dt_str, market="KOSPI")
+                df_kosdaq = stock.get_market_cap_by_ticker(dt_str, market="KOSDAQ")
+                
+                # 데이터가 비어있지 않고, 정상적으로 컬럼이 있는지 확인
+                if not df_kospi.empty and not df_kosdaq.empty and "시가총액" in df_kospi.columns:
+                    df_cap = pd.concat([df_kospi, df_kosdaq]).reset_index()
+                    logs.append(f"pykrx 수집 기준일: {dt_str}")
+                    break
+            except Exception:
+                pass
+            
+            # 빈 껍데기면 하루 전으로 돌아가서 다시 조회
+            target_date_obj -= timedelta(days=1)
+            
+        if df_cap.empty:
+            logs.append("최근 10일간의 시총 데이터를 불러오지 못했습니다.")
+            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
         
-        df_cap = pd.concat([df_kospi, df_kosdaq]).reset_index()
-        df_cap = df_cap.rename(columns={"티커": "Code", "종가": "Close", "시가총액": "Marcap"})
+        # 3. 컬럼명 통일 (pykrx 인덱스/티커명 보정)
+        if "티커" in df_cap.columns:
+            df_cap = df_cap.rename(columns={"티커": "Code"})
+        
+        df_cap = df_cap.rename(columns={"종가": "Close", "시가총액": "Marcap"})
         df_cap["Code"] = df_cap["Code"].astype(str).str.zfill(6)
         
-        # 3. 두 데이터 병합 (이름 + 정확한 시총/종가 결합)
+        # 4. 두 데이터 병합 (이름 + 정확한 최근 시총/종가 결합)
         df = pd.merge(df_names, df_cap[["Code", "Close", "Marcap"]], on="Code", how="inner")
         
         df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(0)
@@ -156,33 +179,6 @@ def load_stock_list():
     except Exception as e:
         logs.append(f"데이터 수집 실패: {e}")
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
-
-
-def apply_base_filters(stocks):
-    logs = []
-    if stocks.empty:
-        logs.append("원본 데이터가 없어 필터링을 건너뜁니다.")
-        return stocks, logs
-        
-    before = len(stocks)
-    stocks = stocks.copy()
-
-    # 1. 시가총액 3,000억 이상 칼같이 컷
-    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
-    logs.append(f"시총 {MARCAP_MIN:,}원 이상 통과: {len(stocks)}개")
-    
-    # 2. 주가 3만 원 이상 칼같이 컷
-    stocks = stocks[stocks["Close"] >= PRICE_MIN]
-    logs.append(f"주가 {PRICE_MIN:,}원 이상 통과: {len(stocks)}개")
-    
-    # 3. 제외 키워드 필터링
-    pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
-    stocks = stocks[~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)]
-    stocks = stocks[~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)]
-    
-    logs.append(f"최종 분석 대상: {len(stocks)}개 (최초 수집 {before}개 중)")
-    return stocks.reset_index(drop=True), logs
-
 
 # =========================
 # 분석 보조 함수들
