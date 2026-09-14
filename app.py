@@ -131,66 +131,102 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 
 
 # =========================
-# 종목 리스트
+# 종목 리스트 (원래 크롤링 방식 복원 + 안정화)
 # =========================
+def clean_number(value):
+    try:
+        text = str(value).strip().replace(",", "").replace("+", "").replace("-", "")
+        return pd.to_numeric(text, errors="coerce")
+    except Exception:
+        return pd.NA
+
+
+def parse_naver_market_sum_html(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+    code_map = {}
+    for link in soup.select("a.tltle"):
+        href = link.get("href", "")
+        name = link.text.strip()
+        if "code=" in href:
+            code_map[name] = href.split("code=")[-1][:6]
+
+    if not code_map:
+        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+
+    try:
+        tables = pd.read_html(StringIO(html_text))
+    except Exception:
+        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+
+    target_df = None
+    for table in tables:
+        cols = [str(c) for c in table.columns]
+        if any("종목명" in c for c in cols) and any("현재가" in c for c in cols) and any("시가총액" in c for c in cols):
+            target_df = table.copy()
+            break
+
+    if target_df is None or target_df.empty:
+        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
+
+    # 다중 인덱스 컬럼 처리 및 단순화
+    if isinstance(target_df.columns, pd.MultiIndex):
+        target_df.columns = [col[-1] for col in target_df.columns]
+
+    target_df = target_df.dropna(subset=["종목명"])
+    target_df = target_df[target_df["종목명"].str.strip() != ""]
+
+    target_df["Code"] = target_df["종목명"].map(code_map)
+    target_df["Name"] = target_df["종목명"]
+    target_df["Close"] = target_df["현재가"].apply(clean_number)
+    target_df["Marcap"] = target_df["시가총액"].apply(clean_number) * 100_000_000
+
+    result = target_df[["Code", "Name", "Marcap", "Close"]].dropna()
+    result["Code"] = result["Code"].astype(str).str.zfill(6)
+    return result[result["Code"].str.match(r"^\d{6}$", na=False)].drop_duplicates(subset=["Code"])
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
-    logs = []
-    df = None
-    
-    # 1차 시도: KRX 상세 데이터 (시가총액, 종가 포함 - 단 1회 호출로 1초 내 수신)
-    try:
-        df = fdr.StockListing("KRX-DESC")
-    except Exception as e:
-        logs.append(f"KRX-DESC 실패: {e}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://finance.naver.com/sise/sise_market_sum.naver",
+    }
+    frames, logs = [], []
+    markets = {"KOSPI": 0, "KOSDAQ": 1}
+    max_page = 30  # 시총 3,000억 이상은 보통 20~25페이지 안에서 모두 끝납니다.
 
-    # 2차 대비: 실패 시 KOSPI + KOSDAQ 개별 상세 호출
-    if df is None or df.empty or "Marcap" not in df.columns:
-        try:
-            df_kospi = fdr.StockListing("KOSPI-DESC")
-            df_kosdaq = fdr.StockListing("KOSDAQ-DESC")
-            df = pd.concat([df_kospi, df_kosdaq], ignore_index=True)
-        except Exception as e:
-            logs.append(f"개별 DESC 실패: {e}")
+    for market_name, sosok in markets.items():
+        market_frames = []
+        for page in range(1, max_page + 1):
+            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+            try:
+                res = requests.get(url, headers=headers, timeout=5)
+                res.encoding = "euc-kr"
+                if res.status_code != 200:
+                    break
 
-    # 3차 비상 대비: 일반 KRX
-    if df is None or df.empty:
-        try:
-            df = fdr.StockListing("KRX")
-        except Exception as e:
-            logs.append(f"KRX 기본 호출 실패: {e}")
+                page_df = parse_naver_market_sum_html(res.text)
+                if page_df.empty:
+                    break
 
-    if df is None or df.empty:
+                # 페이지 내 최하위 종목 시총이 3,000억 미만이면 더 이상 뒤 페이지를 읽지 않고 조기 종료 (속도 대폭 향상)
+                market_frames.append(page_df)
+                if page_df["Marcap"].min() < MARCAP_MIN:
+                    break
+
+            except Exception as e:
+                logs.append(f"{market_name} {page}p 실패: {e}")
+                break
+
+        if market_frames:
+            frames.append(pd.concat(market_frames, ignore_index=True))
+
+    if not frames:
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
 
-    df = df.copy()
-
-    # 컬럼 대소문자 매핑
-    col_map = {}
-    for c in df.columns:
-        cl = c.lower()
-        if cl in ["code", "symbol"]:
-            col_map[c] = "Code"
-        elif cl == "name":
-            col_map[c] = "Name"
-        elif cl in ["marcap", "marketcap"]:
-            col_map[c] = "Marcap"
-        elif cl == "close":
-            col_map[c] = "Close"
-    df = df.rename(columns=col_map)
-
-    if "Marcap" not in df.columns:
-        df["Marcap"] = 0
-    if "Close" not in df.columns:
-        df["Close"] = 0
-
-    df["Code"] = df["Code"].astype(str).str.zfill(6)
-    df["Marcap"] = pd.to_numeric(df["Marcap"], errors="coerce").fillna(0)
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(0)
-
-    df = df.dropna(subset=["Code", "Name"])
-    logs.append(f"원자료 종목 수: {len(df):,}개")
-    return df[["Code", "Name", "Marcap", "Close"]].reset_index(drop=True), logs
+    result_df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["Code"]).reset_index(drop=True)
+    logs.append(f"원자료 수집 종목 수: {len(result_df):,}개")
+    return result_df, logs
 
 
 def apply_base_filters(stocks):
@@ -202,11 +238,7 @@ def apply_base_filters(stocks):
     stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce").fillna(0)
     stocks["Close"] = pd.to_numeric(stocks["Close"], errors="coerce").fillna(0)
     
-    # 6자리 숫자 코드 필터
-    stocks = stocks[stocks["Code"].str.match(r"^\d{6}$", na=False)]
-    logs.append(f"원자료 정리 후: {len(stocks):,}개 / 최초 {before:,}개")
-
-    # ETF/ETN/스팩/리츠/우선주 제외
+    # 1. 제외 키워드 필터링
     pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
     stocks = stocks[
         ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
@@ -214,23 +246,11 @@ def apply_base_filters(stocks):
     stocks = stocks[
         ~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)
     ]
-    logs.append(f"제외 키워드 필터 후: {len(stocks):,}개")
+    logs.append(f"키워드 제외 후: {len(stocks):,}개 / 최초 {before:,}개")
 
-    # 시가총액 단위 보정 및 필터링
-    max_m = stocks["Marcap"].max()
-    if max_m > 0:
-        if max_m < 1_000_000_000:       # 억원 단위인 경우
-            stocks["Marcap"] = stocks["Marcap"] * 100_000_000
-        elif max_m < 100_000_000_000:   # 백만원 단위인 경우
-            stocks["Marcap"] = stocks["Marcap"] * 1_000_000
-            
-        stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
-        logs.append(f"시총 {MARCAP_MIN:,}원 이상 통과: {len(stocks):,}개")
-
-    # 주가 3만원 이상 사전 필터링 (불필요한 동전주/저가주 분석 제외)
-    if stocks["Close"].max() > 0:
-        stocks = stocks[stocks["Close"] >= PRICE_MIN]
-        logs.append(f"가격 {PRICE_MIN:,}원 이상 통과: {len(stocks):,}개")
+    # 2. 시가총액 3,000억 이상 필터링
+    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
+    logs.append(f"시총 {MARCAP_MIN:,}원 이상 필터 후: {len(stocks):,}개")
 
     return stocks.reset_index(drop=True), logs
 
