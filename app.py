@@ -1,7 +1,7 @@
 import streamlit as st
 import FinanceDataReader as fdr
-from pykrx import stock  # <--- 새로 추가된 핵심 라이브러리
 import pandas as pd
+import requests
 import warnings
 import re
 import streamlit.components.v1 as components
@@ -125,60 +125,83 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 
 
 # =========================
-# 초고속 종목 리스트 수집 & 사전 필터링 (FDR + pykrx 조합)
+# 초고속 종목 리스트 수집 & 사전 필터링 (네이버 모바일 JSON API)
 # =========================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
     logs = []
-    try:
-        # 1. FDR로 종목코드와 이름표(Name) 가져오기 (차단 없음)
-        df_names = fdr.StockListing("KRX")[["Code", "Name"]]
-        df_names["Code"] = df_names["Code"].astype(str).str.zfill(6)
-        
-        # 2. pykrx로 최근 거래일의 시가총액과 종가 가져오기
-        # 장중이거나 휴일이라 오늘 데이터가 비어있으면, 값이 나올 때까지 최대 10일 전으로 거슬러 올라감
-        target_date_obj = get_kst_now()
-        df_cap = pd.DataFrame()
-        
-        for _ in range(10): 
-            dt_str = target_date_obj.strftime("%Y%m%d")
+    stock_list = []
+    # 모바일 기기로 위장하여 봇 차단을 우회
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+    }
+    
+    # 코스피/코스닥 상위 500개씩 총 1000개 수집 (약 1~2초 소요)
+    for market in ["KOSPI", "KOSDAQ"]:
+        for page in range(1, 6):
+            url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page={page}&pageSize=100"
             try:
-                df_kospi = stock.get_market_cap_by_ticker(dt_str, market="KOSPI")
-                df_kosdaq = stock.get_market_cap_by_ticker(dt_str, market="KOSDAQ")
-                
-                # 데이터가 비어있지 않고, 정상적으로 컬럼이 있는지 확인
-                if not df_kospi.empty and not df_kosdaq.empty and "시가총액" in df_kospi.columns:
-                    df_cap = pd.concat([df_kospi, df_kosdaq]).reset_index()
-                    logs.append(f"pykrx 수집 기준일: {dt_str}")
+                res = requests.get(url, headers=headers, timeout=5)
+                if res.status_code != 200:
                     break
-            except Exception:
-                pass
-            
-            # 빈 껍데기면 하루 전으로 돌아가서 다시 조회
-            target_date_obj -= timedelta(days=1)
-            
-        if df_cap.empty:
-            logs.append("최근 10일간의 시총 데이터를 불러오지 못했습니다.")
-            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
+                
+                items = res.json().get("stocks", [])
+                if not items:
+                    break
+                
+                for item in items:
+                    code = str(item.get("itemCode", "")).zfill(6)
+                    name = str(item.get("stockName", ""))
+                    
+                    # 방어적 코드: 어떤 Key값으로 데이터가 오더라도 모두 대응 (closePrice, nowPrice 모두 체크)
+                    close_val = item.get("closePrice") or item.get("nowPrice") or "0"
+                    marcap_val = item.get("marketValue") or item.get("mktval") or "0"
+                    
+                    close_raw = str(close_val).replace(",", "")
+                    marcap_raw = str(marcap_val).replace(",", "")
+                    
+                    close = pd.to_numeric(close_raw, errors="coerce")
+                    marcap = pd.to_numeric(marcap_raw, errors="coerce") * 100_000_000
+                    
+                    if code and name:
+                        stock_list.append({"Code": code, "Name": name, "Marcap": marcap, "Close": close})
+            except Exception as e:
+                logs.append(f"{market} {page}페이지 수집 에러: {e}")
+                break
+                
+    df = pd.DataFrame(stock_list)
+    if not df.empty:
+        df = df.drop_duplicates(subset=["Code"]).reset_index(drop=True)
+    
+    logs.append(f"네이버 실시간 API 수집 완료: {len(df):,}개")
+    return df, logs
+
+
+def apply_base_filters(stocks):
+    logs = []
+    if stocks.empty:
+        logs.append("원본 데이터가 없어 필터링을 건너뜁니다.")
+        return stocks, logs
         
-        # 3. 컬럼명 통일 (pykrx 인덱스/티커명 보정)
-        if "티커" in df_cap.columns:
-            df_cap = df_cap.rename(columns={"티커": "Code"})
-        
-        df_cap = df_cap.rename(columns={"종가": "Close", "시가총액": "Marcap"})
-        df_cap["Code"] = df_cap["Code"].astype(str).str.zfill(6)
-        
-        # 4. 두 데이터 병합 (이름 + 정확한 최근 시총/종가 결합)
-        df = pd.merge(df_names, df_cap[["Code", "Close", "Marcap"]], on="Code", how="inner")
-        
-        df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(0)
-        df["Marcap"] = pd.to_numeric(df["Marcap"], errors="coerce").fillna(0)
-        
-        logs.append(f"FDR+pykrx 데이터 병합 완료: {len(df):,}개")
-        return df, logs
-    except Exception as e:
-        logs.append(f"데이터 수집 실패: {e}")
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
+    before = len(stocks)
+    stocks = stocks.copy()
+
+    # 1. 시가총액 3,000억 이상
+    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
+    logs.append(f"시총 {MARCAP_MIN:,}원 이상 통과: {len(stocks)}개")
+    
+    # 2. 주가 3만 원 이상
+    stocks = stocks[stocks["Close"] >= PRICE_MIN]
+    logs.append(f"주가 {PRICE_MIN:,}원 이상 통과: {len(stocks)}개")
+    
+    # 3. 제외 키워드 필터링
+    pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
+    stocks = stocks[~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)]
+    stocks = stocks[~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)]
+    
+    logs.append(f"최종 분석 대상: {len(stocks)}개 (최초 수집 {before}개 중)")
+    return stocks.reset_index(drop=True), logs
+
 
 # =========================
 # 분석 보조 함수들
@@ -499,7 +522,7 @@ with col_scan2:
     )
 
 if scan_full or scan_favorites:
-    with st.spinner("종목 리스트 수집 중 (pykrx)..."):
+    with st.spinner("종목 리스트 수집 중..."):
         stocks, load_logs = load_stock_list()
     
     if stocks.empty:
@@ -520,11 +543,13 @@ if scan_full or scan_favorites:
 
     if stocks.empty:
         st.warning("기본 필터 통과 종목이 없습니다.")
-        st.write("필터링 상세 로그:", filter_logs)
+        with st.expander("필터링 상세 로그 보기"):
+            st.write(filter_logs)
         st.stop()
 
     st.success(f"최종 분석 대상: {len(stocks):,}개")
-    st.write("필터링 상세 로그:", filter_logs)
+    with st.expander("필터링 상세 로그 보기"):
+        st.write(filter_logs)
 
     results, watch_high = [], []
     progress = st.progress(0)
