@@ -4,13 +4,12 @@ import pandas as pd
 import requests
 import warnings
 import re
+import streamlit.components.v1 as components
 
-from bs4 import BeautifulSoup
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
 from datetime import datetime, timedelta
 from urllib.parse import quote
-from io import StringIO
 
 warnings.filterwarnings("ignore")
 
@@ -41,13 +40,12 @@ EXCLUDE_KEYWORDS = [
 
 
 # =========================
-# 유틸 함수 (실행 코드보다 먼저 정의)
+# 유틸 함수
 # =========================
 def get_kst_now():
     if ZoneInfo:
         return datetime.now(ZoneInfo("Asia/Seoul"))
     return datetime.now()
-
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_ohlcv(code, start):
@@ -55,7 +53,6 @@ def load_ohlcv(code, start):
         return fdr.DataReader(code, start)
     except Exception:
         return None
-
 
 def get_latest_pos(df):
     now = get_kst_now()
@@ -65,7 +62,6 @@ def get_latest_pos(df):
         and (now.hour < 15 or (now.hour == 15 and now.minute < 30))
     )
     return len(df) - 2 if is_market_hours else len(df) - 1
-
 
 def get_global_basis_date():
     try:
@@ -80,11 +76,11 @@ def get_global_basis_date():
 
 
 # =========================
-# 페이지 상단 — 기준시간 표시
+# 페이지 상단
 # =========================
 now_kst = get_kst_now()
 scan_basis_date = get_global_basis_date()
-basis_date = scan_basis_date  # analyze_stock() 에서 전역으로 참조
+basis_date = scan_basis_date
 
 st.caption(
     f"기준시간: {now_kst.strftime('%Y-%m-%d %H:%M')} KST "
@@ -113,7 +109,6 @@ st.sidebar.write(f"최대 비중 (50%): **{int(seed * 0.5):,}원**")
 st.sidebar.write(f"최소 현금 (30%): **{int(seed * 0.3):,}원**")
 st.sidebar.divider()
 
-st.sidebar.divider()
 favorite_input = st.sidebar.text_area(
     "⭐ 관심종목 코드", value="", placeholder="예: 005930,000660,319660"
 )
@@ -124,60 +119,140 @@ favorite_codes = {
 }
 
 st.sidebar.divider()
-
 if st.sidebar.button("🔄 데이터 캐시 초기화"):
     st.cache_data.clear()
     st.rerun()
 
 
 # =========================
-# 종목 리스트 (FDR 공식 규격 - 차단 없는 100% 안정 수집)
+# 초고속 종목 리스트 수집 & 사전 필터링
 # =========================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
     logs = []
-    try:
-        df = fdr.StockListing("KRX")
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["Code", "Name"]), ["KRX 수집 실패"]
-        
-        col_rename = {"Symbol": "Code"} if "Symbol" in df.columns else {}
-        df = df.rename(columns=col_rename)
-        df["Code"] = df["Code"].astype(str).str.zfill(6)
-        df = df.dropna(subset=["Code", "Name"])
-        logs.append(f"상장 종목 수집 완료: {len(df):,}개")
-        return df[["Code", "Name"]].reset_index(drop=True), logs
-    except Exception as e:
-        logs.append(f"목록 수집 실패: {e}")
-        return pd.DataFrame(columns=["Code", "Name"]), logs
+    stock_list = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
+    }
+    
+    # 코스피 1~500위, 코스닥 1~500위 (총 1000개만 조회 - 약 1초 소요)
+    for market in ["KOSPI", "KOSDAQ"]:
+        for page in range(1, 6): # 1~5페이지 (페이지당 100개)
+            url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page={page}&pageSize=100"
+            try:
+                res = requests.get(url, headers=headers, timeout=3)
+                if res.status_code != 200:
+                    break
+                items = res.json().get("stocks", [])
+                if not items: break
+                
+                for item in items:
+                    code = str(item.get("itemCode", "")).zfill(6)
+                    name = str(item.get("stockName", ""))
+                    close = pd.to_numeric(str(item.get("nowPrice", "0")).replace(",", ""), errors="coerce")
+                    # marketValue는 억원 단위이므로 1억 곱하기
+                    marcap = pd.to_numeric(str(item.get("marketValue", "0")).replace(",", ""), errors="coerce") * 100_000_000
+                    stock_list.append({"Code": code, "Name": name, "Marcap": marcap, "Close": close})
+            except Exception as e:
+                logs.append(f"{market} API 에러: {e}")
+                break
+                
+    df = pd.DataFrame(stock_list).drop_duplicates(subset=["Code"])
+    logs.append(f"네이버 실시간 API 수집 완료: {len(df)}개")
+    return df, logs
 
 
 def apply_base_filters(stocks):
     logs = []
+    if stocks.empty:
+        return stocks, logs
+        
     before = len(stocks)
     stocks = stocks.copy()
-    stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
-    stocks["Name"] = stocks["Name"].astype(str)
+
+    # 1. 시가총액 3,000억 이상 즉시 컷
+    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
     
-    # 6자리 숫자 코드만 필터링
-    stocks = stocks[stocks["Code"].str.match(r"^\d{6}$", na=False)]
-
-    # ETF/ETN/스팩/리츠/우선주 사전 제거
+    # 2. 주가 3만 원 이상 즉시 컷
+    stocks = stocks[stocks["Close"] >= PRICE_MIN]
+    
+    # 3. 제외 키워드 필터링
     pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
-    stocks = stocks[
-        ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
-    ]
-    stocks = stocks[
-        ~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)
-    ]
-    logs.append(f"기본 제외 필터 후 대상: {len(stocks):,}개 / 최초 {before:,}개")
-
+    stocks = stocks[~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)]
+    stocks = stocks[~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)]
+    
+    logs.append(f"사전 필터링 통과 분석 대상: {len(stocks)}개 (최초 수집 {before}개 중)")
     return stocks.reset_index(drop=True), logs
 
 
+# =========================
+# 분석 보조 함수들
+# =========================
+def make_urls(code, name):
+    return (
+        f"https://finance.naver.com/item/main.naver?code={code}",
+        f"https://search.naver.com/search.naver?where=news&query={quote(name)}",
+    )
+
+def calc_buy_zone(trade_type, close_price, ma20, high_10d):
+    if trade_type == "눌림형":
+        return round(ma20 * 0.98), round(ma20 * 1.02), "20일선 근처 눌림 매수"
+    if trade_type == "돌파형 안정형":
+        return round(high_10d * 0.995), round(high_10d * 1.015), "전고점 돌파 후 눌림/재돌파 매수"
+    if trade_type == "돌파형 공격형":
+        return round(high_10d * 0.99), round(high_10d * 1.02), "강한 돌파 후보, 다음날 눌림 확인"
+    return round(close_price * 0.98), round(close_price * 1.01), "관찰"
+
+def calc_stop_loss(trade_type, buy_low, ma20, recent_low):
+    if trade_type == "눌림형":
+        stop = min(ma20 * 0.97, recent_low * 0.99)
+    elif trade_type in ["돌파형 안정형", "돌파형 공격형"]:
+        stop = min(buy_low * 0.97, recent_low * 0.99)
+    else:
+        stop = recent_low * 0.98
+    stop = min(stop, buy_low * 0.99)
+    return round(stop)
+
+def make_result(
+    grade, code, name, close_price, ma5, ma20, rsi,
+    volume_today, volume_5avg, reason, marcap, pullback,
+    trade_type, buy_low, buy_high, stop_loss, strategy,
+    original_grade=None,
+):
+    chart_url, news_url = make_urls(code, name)
+    return {
+        "grade": grade,
+        "original_grade": original_grade or grade,
+        "name": name,
+        "code": str(code).zfill(6),
+        "basis_date": basis_date,
+        "close": int(close_price),
+        "ma5": round(ma5, 0) if pd.notna(ma5) else 0,
+        "ma20": round(ma20, 0) if pd.notna(ma20) else 0,
+        "rsi": round(rsi, 1) if pd.notna(rsi) else 0,
+        "vol_ratio": round(volume_today / volume_5avg * 100, 1) if volume_5avg > 0 else 0,
+        "pullback": round(pullback, 1),
+        "trade_type": trade_type,
+        "buy_low_raw": buy_low,
+        "buy_high_raw": buy_high,
+        "stop_loss_raw": stop_loss,
+        "buy_zone": f"{buy_low:,} ~ {buy_high:,}" if buy_low else "-",
+        "stop_loss": f"{stop_loss:,}" if stop_loss else "-",
+        "strategy": strategy,
+        "reason": reason,
+        "chart": chart_url,
+        "news": news_url,
+        "marcap": marcap,
+    }
+
+
+# =========================
+# 개별 종목 분석
+# =========================
 def analyze_stock(code, name, marcap=0):
     start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
     df = load_ohlcv(code, start)
+    
     if df is None or len(df) < 80:
         return None
 
@@ -189,21 +264,20 @@ def analyze_stock(code, name, marcap=0):
     except Exception:
         return None
 
-    # [고속 컷오프 1] 현재가 3만원 미만 즉시 탈락 (복잡한 이평선/RSI 계산 생략)
     close_price = df["Close"].iloc[latest_pos]
-    if close_price < PRICE_MIN:
-        return None
-
-    # [고속 컷오프 2] 거래대금 필터 선제 적용 (20일 평균 거래대금 100억 미만 즉시 탈락)
+    
+    # 고속 필터 2: 거래대금
     try:
-        trade_amount_today = close_price * df["Volume"].iloc[latest_pos]
+        volume_today = df["Volume"].iloc[latest_pos]
+        trade_amount_today = close_price * volume_today
         trade_amount_20avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 20:latest_pos].mean()
+        
         if trade_amount_today < TRADE_AMOUNT_TODAY_MIN or trade_amount_20avg < TRADE_AMOUNT_20AVG_MIN:
             return None
     except Exception:
         return None
 
-    # 기준 통과 종목에 대해서만 보조지표 정밀 계산 수행
+    # 지표 계산
     df["ma5"] = SMAIndicator(df["Close"], window=5).sma_indicator()
     df["ma20"] = SMAIndicator(df["Close"], window=20).sma_indicator()
     df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
@@ -222,7 +296,6 @@ def analyze_stock(code, name, marcap=0):
 
     try:
         ma60_5ago = df.iloc[latest_pos - 5]["ma60"]
-        volume_today = latest["Volume"]
         volume_5avg = df["Volume"].iloc[latest_pos - 5:latest_pos].mean()
         volume_20avg = df["Volume"].iloc[latest_pos - 20:latest_pos].mean()
         trade_amount_3avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 3:latest_pos].mean()
@@ -329,7 +402,7 @@ def analyze_stock(code, name, marcap=0):
 
 
 # =========================
-# 카드 / 표 렌더링
+# 테이블 표시 및 복사 함수
 # =========================
 col_names = {
     "name": "종목명", "code": "코드", "original_grade": "원래등급",
@@ -348,14 +421,12 @@ watch_cols = [
     "trade_type", "buy_zone", "stop_loss", "strategy", "reason", "chart", "news", "marcap",
 ]
 
-
 def show_table(df, cols):
     if df is None or df.empty:
         st.write("해당 종목 없음")
         return
 
     display_df = df[cols].rename(columns=col_names)
-
     st.dataframe(
         display_df,
         use_container_width=True,
@@ -364,7 +435,6 @@ def show_table(df, cols):
             "뉴스": st.column_config.LinkColumn("뉴스", display_text="뉴스 보기"),
         },
     )
-
 
 def get_favorite_df(df_result, df_watch):
     frames = []
@@ -378,11 +448,9 @@ def get_favorite_df(df_result, df_watch):
     all_df["code"] = all_df["code"].astype(str).str.zfill(6)
     return all_df[all_df["code"].isin(favorite_codes)]
 
-
 def make_copy_text(df):
     if df is None or df.empty:
         return "해당 종목 없음"
-
     lines = []
     for _, row in df.iterrows():
         grade = row.get("original_grade", row["grade"])
@@ -399,14 +467,10 @@ def make_copy_text(df):
             str(row["pullback"]),
             row["buy_zone"],
             row["stop_loss"],
-            "",   # 익일종가(확인용) — 직접 입력
-            "",   # 진입가 — 직접 입력
+            "",   # 익일종가(확인용)
+            "",   # 진입가
         ]))
     return "\n".join(lines)
-
-
-import streamlit.components.v1 as components
-
 
 def copy_button(text, key):
     safe_text = text.replace("`", "'")
@@ -447,11 +511,10 @@ if scan_full or scan_favorites:
     
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
-        st.write("발생한 에러 로그:", load_logs)  # <--- 이 줄 추가
+        st.write("발생한 에러 로그:", load_logs)
         st.stop()
 
     stocks, filter_logs = apply_base_filters(stocks)
-    st.write("필터링 상세 로그:", filter_logs)
 
     if scan_favorites:
         if not favorite_codes:
@@ -466,7 +529,8 @@ if scan_full or scan_favorites:
         st.warning("기본 필터 통과 종목이 없습니다.")
         st.stop()
 
-    st.success(f"실제 분석 대상: {len(stocks):,}개")
+    st.success(f"최종 분석 대상: {len(stocks):,}개")
+    st.write("필터링 상세 로그:", filter_logs)
 
     results, watch_high = [], []
     progress = st.progress(0)
@@ -476,7 +540,10 @@ if scan_full or scan_favorites:
     for i, row in enumerate(stocks.itertuples()):
         status.text(f"분석 중... {i + 1}/{total} - {row.Name}")
         progress.progress((i + 1) / total)
-        result = analyze_stock(code=row.Code, name=row.Name, marcap=getattr(row, "Marcap", 0))
+        
+        marcap_val = getattr(row, "Marcap", 0)
+        result = analyze_stock(code=row.Code, name=row.Name, marcap=marcap_val)
+        
         if result:
             if result["grade"] == "watch_high":
                 watch_high.append(result)
