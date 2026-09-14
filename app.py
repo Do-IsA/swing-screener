@@ -138,11 +138,11 @@ def load_stock_list():
     logs = []
     df = None
     
-    # 1차 시도: KRX 전체 상장종목
+    # 1차 시도: KRX 시가총액 기준 상장종목 데이터 (시총, 종가 포함)
     try:
-        df = fdr.StockListing("KRX")
+        df = fdr.StockListing("KRX-MARCAP")
     except Exception as e:
-        logs.append(f"KRX 호출 실패: {e}")
+        logs.append(f"KRX-MARCAP 호출 실패: {e}")
 
     # 2차 시도: 1차가 비어있으면 KOSPI + KOSDAQ 개별 호출
     if df is None or df.empty:
@@ -191,8 +191,9 @@ def apply_base_filters(stocks):
     stocks = stocks.copy()
     stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
     stocks["Name"] = stocks["Name"].astype(str)
+    stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce").fillna(0)
     
-    # 6자리 숫자 코드만 필터링
+    # 6자리 숫자 코드 필터
     stocks = stocks[stocks["Code"].str.match(r"^\d{6}$", na=False)]
     logs.append(f"원자료 정리 후: {len(stocks):,}개 / 최초 {before:,}개")
 
@@ -204,16 +205,15 @@ def apply_base_filters(stocks):
     stocks = stocks[
         ~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)
     ]
-    logs.append(f"ETF/ETN/스팩/리츠/우선주 제외 후: {len(stocks):,}개")
+    logs.append(f"제외 키워드 필터 후: {len(stocks):,}개")
 
-    # Marcap이 유효한 값(0 초과)으로 들어있는 경우에만 1차 사전 필터 적용, 
-    # 0으로 들어온 경우는 analyze_stock()에서 실시간 일봉 기준으로 검증하도록 통과
-    valid_marcap = stocks["Marcap"] > 0
-    if valid_marcap.sum() > 100:  # 시총 데이터가 정상 수신된 경우만 적용
+    # 시가총액 3,000억 이상 사전 필터링 (800~900개로 압축)
+    if stocks["Marcap"].max() > 0:
+        # 혹시 단위가 억원으로 들어왔을 경우 대비
+        if stocks["Marcap"].max() < 1_000_000_000:
+            stocks["Marcap"] = stocks["Marcap"] * 100_000_000
         stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
-        logs.append(f"시총 {MARCAP_MIN:,}원 이상 사전 필터 적용 후: {len(stocks):,}개")
-    else:
-        logs.append("시총 데이터 미제공 상태 -> analyze_stock 단계에서 거래대금/가격 기준으로 정밀 필터링 진행")
+        logs.append(f"시총 {MARCAP_MIN:,}원 이상 통과: {len(stocks):,}개")
 
     return stocks.reset_index(drop=True), logs
 
