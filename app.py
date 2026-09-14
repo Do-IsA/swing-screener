@@ -133,40 +133,57 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 # =========================
 # 종목 리스트
 # =========================
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
     logs = []
+    df = None
+    
+    # 1차 시도: KRX 전체 상장종목
     try:
-        df_krx = fdr.StockListing("KRX")
-        
-        col_map = {
-            "Code": "Code",
-            "Name": "Name",
-            "Marcap": "Marcap",
-            "Close": "Close"
-        }
-        
-        if "Symbol" in df_krx.columns:
-            df_krx = df_krx.rename(columns={"Symbol": "Code"})
-        if "Stocks" in df_krx.columns and "Marcap" not in df_krx.columns:
-            df_krx["Marcap"] = df_krx["Close"] * df_krx["Stocks"]
-
-        result_df = df_krx[["Code", "Name", "Marcap", "Close"]].copy()
-        result_df = result_df.dropna(subset=["Code", "Name", "Marcap", "Close"])
-        
-        result_df["Code"] = result_df["Code"].astype(str).str.zfill(6)
-        result_df = result_df[result_df["Code"].str.match(r"^\d{6}$", na=False)]
-        result_df = result_df.drop_duplicates(subset=["Code"]).reset_index(drop=True)
-        
-        logs.append(f"원자료 종목 수: {len(result_df):,}개")
-        return result_df, logs
-
+        df = fdr.StockListing("KRX")
     except Exception as e:
-        logs.append(f"fdr 종목 로딩 실패: {e}")
+        logs.append(f"KRX 호출 실패: {e}")
+
+    # 2차 시도: 1차가 비어있으면 KOSPI + KOSDAQ 개별 호출
+    if df is None or df.empty:
+        try:
+            df_kospi = fdr.StockListing("KOSPI")
+            df_kosdaq = fdr.StockListing("KOSDAQ")
+            df = pd.concat([df_kospi, df_kosdaq], ignore_index=True)
+        except Exception as e:
+            logs.append(f"KOSPI/KOSDAQ 개별 호출 실패: {e}")
+
+    if df is None or df.empty:
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
 
+    df = df.copy()
+
+    # FinanceDataReader 버전에 따른 컬럼명 대응 (Code/Symbol 매핑)
+    col_rename = {}
+    if "Symbol" in df.columns and "Code" not in df.columns:
+        col_rename["Symbol"] = "Code"
+    if "Stocks" in df.columns and "Marcap" not in df.columns:
+        # 시총 컬럼이 없을 경우 주식수 * 종가 계산 대비
+        pass
+    df = df.rename(columns=col_rename)
+
+    # 필수 컬럼 존재 여부 확인
+    for req_col in ["Code", "Name", "Close"]:
+        if req_col not in df.columns:
+            logs.append(f"필수 컬럼 누락: {req_col} (현재 컬럼 목록: {list(df.columns)})")
+            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
+
+    # Marcap 컬럼이 없으면 0으로 채움
+    if "Marcap" not in df.columns:
+        df["Marcap"] = 0
+
+    df["Code"] = df["Code"].astype(str).str.zfill(6)
+    df["Marcap"] = pd.to_numeric(df["Marcap"], errors="coerce").fillna(0)
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(0)
+
+    df = df.dropna(subset=["Code", "Name"])
+    logs.append(f"원자료 종목 수: {len(df):,}개")
+    return df[["Code", "Name", "Marcap", "Close"]].reset_index(drop=True), logs
 
 def apply_base_filters(stocks):
     logs = []
