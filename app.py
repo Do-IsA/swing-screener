@@ -59,13 +59,12 @@ def load_ohlcv(code, start):
 
 def get_latest_pos(df):
     now = get_kst_now()
-    before_open = now.hour < 9
-    market_closed = (
-        now.hour > 15
-        or (now.hour == 15 and now.minute >= 30)
+    is_weekday = now.weekday() < 5
+    is_market_hours = is_weekday and (
+        (now.hour > 9 or (now.hour == 9 and now.minute >= 0))
+        and (now.hour < 15 or (now.hour == 15 and now.minute < 30))
     )
-    # 장 전(~09:00)이면 오늘 봉이 아직 없으므로 전일 봉(df[-1])이 최신
-    return len(df) - 1 if (market_closed or before_open) else len(df) - 2
+    return len(df) - 2 if is_market_hours else len(df) - 1
 
 
 def get_global_basis_date():
@@ -134,131 +133,39 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 # =========================
 # 종목 리스트
 # =========================
-def clean_number(value):
-    try:
-        text = str(value).strip().replace(",", "").replace("+", "").replace("-", "")
-        return pd.to_numeric(text, errors="coerce")
-    except Exception:
-        return pd.NA
-
-
-def parse_naver_market_sum_html(html_text):
-    soup = BeautifulSoup(html_text, "html.parser")
-    code_map = {}
-    for link in soup.select("a.tltle"):
-        href = link.get("href", "")
-        name = link.text.strip()
-        if "code=" in href:
-            code_map[name] = href.split("code=")[-1][:6]
-
-    if not code_map:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    tables = pd.read_html(StringIO(html_text))
-    target_df = None
-    for table in tables:
-        cols = [str(c) for c in table.columns]
-        if "종목명" in cols and "현재가" in cols and "시가총액" in cols:
-            target_df = table.copy()
-            break
-
-    if target_df is None:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    target_df = target_df.dropna(subset=["종목명"])
-    if target_df.empty:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    target_df["Code"] = target_df["종목명"].map(code_map)
-    target_df["Name"] = target_df["종목명"]
-    target_df["Close"] = target_df["현재가"].apply(clean_number)
-    target_df["Marcap"] = target_df["시가총액"].apply(clean_number) * 100_000_000
-
-    result = target_df[["Code", "Name", "Marcap", "Close"]].copy()
-    result = result.dropna(subset=["Code", "Name", "Marcap", "Close"])
-    if result.empty:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    result["Code"] = result["Code"].astype(str).str.zfill(6)
-    result = result[result["Code"].str.match(r"^\d{6}$", na=False)]
-    result = result.drop_duplicates(subset=["Code"])
-    return result.reset_index(drop=True)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-        ),
-        "Referer": "https://finance.naver.com/",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-    frames, logs = [], []
-    markets = {"KOSPI": 0, "KOSDAQ": 1}
-    max_page = 45
+    logs = []
+    try:
+        df_krx = fdr.StockListing("KRX")
+        
+        col_map = {
+            "Code": "Code",
+            "Name": "Name",
+            "Marcap": "Marcap",
+            "Close": "Close"
+        }
+        
+        if "Symbol" in df_krx.columns:
+            df_krx = df_krx.rename(columns={"Symbol": "Code"})
+        if "Stocks" in df_krx.columns and "Marcap" not in df_krx.columns:
+            df_krx["Marcap"] = df_krx["Close"] * df_krx["Stocks"]
 
-    for market_name, sosok in markets.items():
-        market_frames = []
-        seen_codes = set()
-        empty_page_count = 0
-        for page in range(1, max_page + 1):
-            url = (
-                f"https://finance.naver.com/sise/sise_market_sum.naver"
-                f"?sosok={sosok}&page={page}"
-            )
-            try:
-                res = requests.get(url, headers=headers, timeout=10)
-                res.encoding = "euc-kr"
-                if res.status_code != 200:
-                    logs.append(f"{market_name} {page}페이지 HTTP {res.status_code}")
-                    continue
+        result_df = df_krx[["Code", "Name", "Marcap", "Close"]].copy()
+        result_df = result_df.dropna(subset=["Code", "Name", "Marcap", "Close"])
+        
+        result_df["Code"] = result_df["Code"].astype(str).str.zfill(6)
+        result_df = result_df[result_df["Code"].str.match(r"^\d{6}$", na=False)]
+        result_df = result_df.drop_duplicates(subset=["Code"]).reset_index(drop=True)
+        
+        logs.append(f"원자료 종목 수: {len(result_df):,}개")
+        return result_df, logs
 
-                page_df = parse_naver_market_sum_html(res.text)
-                if page_df.empty:
-                    empty_page_count += 1
-                    if page == 1:
-                        logs.append(f"{market_name} 1페이지에서 종목 데이터를 찾지 못했습니다.")
-                    if empty_page_count >= 2:
-                        break
-                    continue
-
-                empty_page_count = 0
-                page_codes = set(page_df["Code"].astype(str))
-                new_codes = page_codes - seen_codes
-                if not new_codes:
-                    logs.append(f"{market_name} {page}페이지 신규 종목 없음 → 종료")
-                    break
-
-                seen_codes.update(page_codes)
-                page_df = page_df[page_df["Code"].isin(new_codes)].drop_duplicates(
-                    subset=["Code"]
-                )
-                if not page_df.empty:
-                    market_frames.append(page_df)
-            except Exception as e:
-                logs.append(f"{market_name} {page}페이지 로딩 실패: {e}")
-                continue
-
-        if market_frames:
-            market_df = pd.concat(market_frames, ignore_index=True).drop_duplicates(
-                subset=["Code"]
-            )
-            frames.append(market_df)
-            logs.append(f"{market_name}: {len(market_df)}개 로딩")
-        else:
-            logs.append(f"{market_name}: 로딩된 종목 없음")
-
-    if not frames:
+    except Exception as e:
+        logs.append(f"fdr 종목 로딩 실패: {e}")
         return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
-
-    result_df = pd.concat(frames, ignore_index=True)
-    result_df["Code"] = result_df["Code"].astype(str).str.zfill(6)
-    result_df = result_df[result_df["Code"].str.match(r"^\d{6}$", na=False)]
-    result_df = result_df.drop_duplicates(subset=["Code"]).reset_index(drop=True)
-    logs.append(f"원자료 종목 수: {len(result_df):,}개")
-    return result_df, logs
 
 
 def apply_base_filters(stocks):
