@@ -131,102 +131,25 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 
 
 # =========================
-# 종목 리스트 (원래 크롤링 방식 복원 + 안정화)
+# 종목 리스트 (FDR 공식 규격 - 차단 없는 100% 안정 수집)
 # =========================
-def clean_number(value):
-    try:
-        text = str(value).strip().replace(",", "").replace("+", "").replace("-", "")
-        return pd.to_numeric(text, errors="coerce")
-    except Exception:
-        return pd.NA
-
-
-def parse_naver_market_sum_html(html_text):
-    soup = BeautifulSoup(html_text, "html.parser")
-    code_map = {}
-    for link in soup.select("a.tltle"):
-        href = link.get("href", "")
-        name = link.text.strip()
-        if "code=" in href:
-            code_map[name] = href.split("code=")[-1][:6]
-
-    if not code_map:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    try:
-        tables = pd.read_html(StringIO(html_text))
-    except Exception:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    target_df = None
-    for table in tables:
-        cols = [str(c) for c in table.columns]
-        if any("종목명" in c for c in cols) and any("현재가" in c for c in cols) and any("시가총액" in c for c in cols):
-            target_df = table.copy()
-            break
-
-    if target_df is None or target_df.empty:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"])
-
-    # 다중 인덱스 컬럼 처리 및 단순화
-    if isinstance(target_df.columns, pd.MultiIndex):
-        target_df.columns = [col[-1] for col in target_df.columns]
-
-    target_df = target_df.dropna(subset=["종목명"])
-    target_df = target_df[target_df["종목명"].str.strip() != ""]
-
-    target_df["Code"] = target_df["종목명"].map(code_map)
-    target_df["Name"] = target_df["종목명"]
-    target_df["Close"] = target_df["현재가"].apply(clean_number)
-    target_df["Marcap"] = target_df["시가총액"].apply(clean_number) * 100_000_000
-
-    result = target_df[["Code", "Name", "Marcap", "Close"]].dropna()
-    result["Code"] = result["Code"].astype(str).str.zfill(6)
-    return result[result["Code"].str.match(r"^\d{6}$", na=False)].drop_duplicates(subset=["Code"])
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://finance.naver.com/sise/sise_market_sum.naver",
-    }
-    frames, logs = [], []
-    markets = {"KOSPI": 0, "KOSDAQ": 1}
-    max_page = 30  # 시총 3,000억 이상은 보통 20~25페이지 안에서 모두 끝납니다.
-
-    for market_name, sosok in markets.items():
-        market_frames = []
-        for page in range(1, max_page + 1):
-            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
-            try:
-                res = requests.get(url, headers=headers, timeout=5)
-                res.encoding = "euc-kr"
-                if res.status_code != 200:
-                    break
-
-                page_df = parse_naver_market_sum_html(res.text)
-                if page_df.empty:
-                    break
-
-                # 페이지 내 최하위 종목 시총이 3,000억 미만이면 더 이상 뒤 페이지를 읽지 않고 조기 종료 (속도 대폭 향상)
-                market_frames.append(page_df)
-                if page_df["Marcap"].min() < MARCAP_MIN:
-                    break
-
-            except Exception as e:
-                logs.append(f"{market_name} {page}p 실패: {e}")
-                break
-
-        if market_frames:
-            frames.append(pd.concat(market_frames, ignore_index=True))
-
-    if not frames:
-        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
-
-    result_df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["Code"]).reset_index(drop=True)
-    logs.append(f"원자료 수집 종목 수: {len(result_df):,}개")
-    return result_df, logs
+    logs = []
+    try:
+        df = fdr.StockListing("KRX")
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["Code", "Name"]), ["KRX 수집 실패"]
+        
+        col_rename = {"Symbol": "Code"} if "Symbol" in df.columns else {}
+        df = df.rename(columns=col_rename)
+        df["Code"] = df["Code"].astype(str).str.zfill(6)
+        df = df.dropna(subset=["Code", "Name"])
+        logs.append(f"상장 종목 수집 완료: {len(df):,}개")
+        return df[["Code", "Name"]].reset_index(drop=True), logs
+    except Exception as e:
+        logs.append(f"목록 수집 실패: {e}")
+        return pd.DataFrame(columns=["Code", "Name"]), logs
 
 
 def apply_base_filters(stocks):
@@ -235,10 +158,11 @@ def apply_base_filters(stocks):
     stocks = stocks.copy()
     stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
     stocks["Name"] = stocks["Name"].astype(str)
-    stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce").fillna(0)
-    stocks["Close"] = pd.to_numeric(stocks["Close"], errors="coerce").fillna(0)
     
-    # 1. 제외 키워드 필터링
+    # 6자리 숫자 코드만 필터링
+    stocks = stocks[stocks["Code"].str.match(r"^\d{6}$", na=False)]
+
+    # ETF/ETN/스팩/리츠/우선주 사전 제거
     pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
     stocks = stocks[
         ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
@@ -246,76 +170,12 @@ def apply_base_filters(stocks):
     stocks = stocks[
         ~stocks["Name"].str.contains(r"우$|우B$|우C$|우선주", regex=True, na=False)
     ]
-    logs.append(f"키워드 제외 후: {len(stocks):,}개 / 최초 {before:,}개")
-
-    # 2. 시가총액 3,000억 이상 필터링
-    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
-    logs.append(f"시총 {MARCAP_MIN:,}원 이상 필터 후: {len(stocks):,}개")
+    logs.append(f"기본 제외 필터 후 대상: {len(stocks):,}개 / 최초 {before:,}개")
 
     return stocks.reset_index(drop=True), logs
 
 
-def make_urls(code, name):
-    return (
-        f"https://finance.naver.com/item/main.naver?code={code}",
-        f"https://search.naver.com/search.naver?where=news&query={quote(name)}",
-    )
-
-def calc_buy_zone(trade_type, close_price, ma20, high_10d):
-    if trade_type == "눌림형":
-        return round(ma20 * 0.98), round(ma20 * 1.02), "20일선 근처 눌림 매수"
-    if trade_type == "돌파형 안정형":
-        return round(high_10d * 0.995), round(high_10d * 1.015), "전고점 돌파 후 눌림/재돌파 매수"
-    if trade_type == "돌파형 공격형":
-        return round(high_10d * 0.99), round(high_10d * 1.02), "강한 돌파 후보, 다음날 눌림 확인"
-    return round(close_price * 0.98), round(close_price * 1.01), "관찰"
-
-
-def calc_stop_loss(trade_type, buy_low, ma20, recent_low):
-    if trade_type == "눌림형":
-        stop = min(ma20 * 0.97, recent_low * 0.99)
-    elif trade_type in ["돌파형 안정형", "돌파형 공격형"]:
-        stop = min(buy_low * 0.97, recent_low * 0.99)
-    else:
-        stop = recent_low * 0.98
-    stop = min(stop, buy_low * 0.99)  # 손절가는 항상 매수하단보다 낮게
-    return round(stop)
-
-
-def make_result(
-    grade, code, name, close_price, ma5, ma20, rsi,
-    volume_today, volume_5avg, reason, marcap, pullback,
-    trade_type, buy_low, buy_high, stop_loss, strategy,
-    original_grade=None,
-):
-    chart_url, news_url = make_urls(code, name)
-    return {
-        "grade": grade,
-        "original_grade": original_grade or grade,
-        "name": name,
-        "code": str(code).zfill(6),
-        "basis_date": basis_date,
-        "close": int(close_price),
-        "ma5": round(ma5, 0) if pd.notna(ma5) else 0,
-        "ma20": round(ma20, 0) if pd.notna(ma20) else 0,
-        "rsi": round(rsi, 1) if pd.notna(rsi) else 0,
-        "vol_ratio": round(volume_today / volume_5avg * 100, 1) if volume_5avg > 0 else 0,
-        "pullback": round(pullback, 1),
-        "trade_type": trade_type,
-        "buy_low_raw": buy_low,
-        "buy_high_raw": buy_high,
-        "stop_loss_raw": stop_loss,
-        "buy_zone": f"{buy_low:,} ~ {buy_high:,}" if buy_low else "-",
-        "stop_loss": f"{stop_loss:,}" if stop_loss else "-",
-        "strategy": strategy,
-        "reason": reason,
-        "chart": chart_url,
-        "news": news_url,
-        "marcap": marcap,
-    }
-
-
-def analyze_stock(code, name, marcap):
+def analyze_stock(code, name, marcap=0):
     start = (get_kst_now() - timedelta(days=160)).strftime("%Y-%m-%d")
     df = load_ohlcv(code, start)
     if df is None or len(df) < 80:
@@ -329,10 +189,21 @@ def analyze_stock(code, name, marcap):
     except Exception:
         return None
 
+    # [고속 컷오프 1] 현재가 3만원 미만 즉시 탈락 (복잡한 이평선/RSI 계산 생략)
     close_price = df["Close"].iloc[latest_pos]
     if close_price < PRICE_MIN:
         return None
 
+    # [고속 컷오프 2] 거래대금 필터 선제 적용 (20일 평균 거래대금 100억 미만 즉시 탈락)
+    try:
+        trade_amount_today = close_price * df["Volume"].iloc[latest_pos]
+        trade_amount_20avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 20:latest_pos].mean()
+        if trade_amount_today < TRADE_AMOUNT_TODAY_MIN or trade_amount_20avg < TRADE_AMOUNT_20AVG_MIN:
+            return None
+    except Exception:
+        return None
+
+    # 기준 통과 종목에 대해서만 보조지표 정밀 계산 수행
     df["ma5"] = SMAIndicator(df["Close"], window=5).sma_indicator()
     df["ma20"] = SMAIndicator(df["Close"], window=20).sma_indicator()
     df["ma60"] = SMAIndicator(df["Close"], window=60).sma_indicator()
@@ -354,16 +225,10 @@ def analyze_stock(code, name, marcap):
         volume_today = latest["Volume"]
         volume_5avg = df["Volume"].iloc[latest_pos - 5:latest_pos].mean()
         volume_20avg = df["Volume"].iloc[latest_pos - 20:latest_pos].mean()
-        trade_amount_today = close_price * volume_today
-        trade_amount_20avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 20:latest_pos].mean()
         trade_amount_3avg = (df["Close"] * df["Volume"]).iloc[latest_pos - 3:latest_pos].mean()
     except Exception:
         return None
 
-    if trade_amount_20avg < TRADE_AMOUNT_20AVG_MIN:
-        return None
-    if trade_amount_today < TRADE_AMOUNT_TODAY_MIN:
-        return None
     if (
         trade_amount_3avg < trade_amount_20avg * 0.5
         and trade_amount_3avg < TRADE_AMOUNT_20AVG_MIN
