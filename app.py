@@ -191,19 +191,12 @@ def apply_base_filters(stocks):
     stocks = stocks.copy()
     stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
     stocks["Name"] = stocks["Name"].astype(str)
-    stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce").fillna(0)
-    stocks["Close"] = pd.to_numeric(stocks["Close"], errors="coerce").fillna(0)
-    stocks = stocks.dropna(subset=["Code", "Name", "Marcap", "Close"])
+    
+    # 6자리 숫자 코드만 필터링
+    stocks = stocks[stocks["Code"].str.match(r"^\d{6}$", na=False)]
     logs.append(f"원자료 정리 후: {len(stocks):,}개 / 최초 {before:,}개")
 
-    # FinanceDataReader의 Marcap 단위 자동 보정 (억원/백만원 단위 대응)
-    max_marcap = stocks["Marcap"].max()
-    if max_marcap < 1_000_000_000:  # 최대 시총(삼성전자 등)이 10억 미만으로 잡혀있다면 '억원' 단위임
-        stocks["Marcap"] = stocks["Marcap"] * 100_000_000
-    elif max_marcap < 100_000_000_000:  # 백만원 단위 대응
-        stocks["Marcap"] = stocks["Marcap"] * 1_000_000
-
-    # 제외 키워드 필터링
+    # ETF/ETN/스팩/리츠/우선주 제외
     pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
     stocks = stocks[
         ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
@@ -213,9 +206,15 @@ def apply_base_filters(stocks):
     ]
     logs.append(f"ETF/ETN/스팩/리츠/우선주 제외 후: {len(stocks):,}개")
 
-    # 시가총액 필터 적용
-    stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
-    logs.append(f"시총 {MARCAP_MIN:,}원 이상 필터 후: {len(stocks):,}개")
+    # Marcap이 유효한 값(0 초과)으로 들어있는 경우에만 1차 사전 필터 적용, 
+    # 0으로 들어온 경우는 analyze_stock()에서 실시간 일봉 기준으로 검증하도록 통과
+    valid_marcap = stocks["Marcap"] > 0
+    if valid_marcap.sum() > 100:  # 시총 데이터가 정상 수신된 경우만 적용
+        stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
+        logs.append(f"시총 {MARCAP_MIN:,}원 이상 사전 필터 적용 후: {len(stocks):,}개")
+    else:
+        logs.append("시총 데이터 미제공 상태 -> analyze_stock 단계에서 거래대금/가격 기준으로 정밀 필터링 진행")
+
     return stocks.reset_index(drop=True), logs
 
 
@@ -543,13 +542,6 @@ with col_scan2:
 if scan_full or scan_favorites:
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
-    
-    # --- 여기서부터 점검용 코드 추가 ---
-    st.write("1. 불러온 원본 종목 수:", len(stocks))
-    if not stocks.empty:
-        st.write("2. 실제 컬럼 목록:", list(stocks.columns))
-        st.write("3. 상위 3개 데이터 샘플:", stocks.head(3))
-    # ---------------------------------
     
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
