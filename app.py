@@ -191,11 +191,19 @@ def apply_base_filters(stocks):
     stocks = stocks.copy()
     stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
     stocks["Name"] = stocks["Name"].astype(str)
-    stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce")
-    stocks["Close"] = pd.to_numeric(stocks["Close"], errors="coerce")
+    stocks["Marcap"] = pd.to_numeric(stocks["Marcap"], errors="coerce").fillna(0)
+    stocks["Close"] = pd.to_numeric(stocks["Close"], errors="coerce").fillna(0)
     stocks = stocks.dropna(subset=["Code", "Name", "Marcap", "Close"])
     logs.append(f"원자료 정리 후: {len(stocks):,}개 / 최초 {before:,}개")
 
+    # FinanceDataReader의 Marcap 단위 자동 보정 (억원/백만원 단위 대응)
+    max_marcap = stocks["Marcap"].max()
+    if max_marcap < 1_000_000_000:  # 최대 시총(삼성전자 등)이 10억 미만으로 잡혀있다면 '억원' 단위임
+        stocks["Marcap"] = stocks["Marcap"] * 100_000_000
+    elif max_marcap < 100_000_000_000:  # 백만원 단위 대응
+        stocks["Marcap"] = stocks["Marcap"] * 1_000_000
+
+    # 제외 키워드 필터링
     pattern = "|".join([re.escape(x) for x in EXCLUDE_KEYWORDS])
     stocks = stocks[
         ~stocks["Name"].str.contains(pattern, case=False, regex=True, na=False)
@@ -205,9 +213,9 @@ def apply_base_filters(stocks):
     ]
     logs.append(f"ETF/ETN/스팩/리츠/우선주 제외 후: {len(stocks):,}개")
 
+    # 시가총액 필터 적용
     stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
     logs.append(f"시총 {MARCAP_MIN:,}원 이상 필터 후: {len(stocks):,}개")
-    logs.append("가격 필터는 analyze_stock()의 기준봉 종가로 적용")
     return stocks.reset_index(drop=True), logs
 
 
