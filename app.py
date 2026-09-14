@@ -136,67 +136,61 @@ if st.sidebar.button("🔄 데이터 캐시 초기화"):
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_list():
     logs = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-    }
+    df = None
     
-    frames = []
-    # 네이버 금융 모바일 JSON API (차단 없음, 1회 요청당 최대 100개씩 고속 수신)
-    for market in ["KOSPI", "KOSDAQ"]:
-        page = 1
-        market_stocks = []
-        while True:
-            url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page={page}&pageSize=100"
-            try:
-                res = requests.get(url, headers=headers, timeout=5)
-                if res.status_code != 200:
-                    break
-                data = res.json()
-                stocks_list = data.get("stocks", [])
-                if not stocks_list:
-                    break
-                
-                for s in stocks_list:
-                    # itemCode, stockName, nowPrice, marketValue(억원)
-                    code = str(s.get("itemCode", "")).zfill(6)
-                    name = str(s.get("stockName", ""))
-                    close = pd.to_numeric(str(s.get("nowPrice", "")).replace(",", ""), errors="coerce")
-                    # marketValue는 억원 단위로 들어오므로 1억을 곱해 원 단위로 환산
-                    marcap_raw = pd.to_numeric(str(s.get("marketValue", "")).replace(",", ""), errors="coerce")
-                    marcap = marcap_raw * 100_000_000 if pd.notna(marcap_raw) else 0
+    # 1차 시도: KRX 상세 데이터 (시가총액, 종가 포함 - 단 1회 호출로 1초 내 수신)
+    try:
+        df = fdr.StockListing("KRX-DESC")
+    except Exception as e:
+        logs.append(f"KRX-DESC 실패: {e}")
 
-                    if code and name and pd.notna(close):
-                        market_stocks.append({
-                            "Code": code,
-                            "Name": name,
-                            "Marcap": marcap,
-                            "Close": close
-                        })
-                page += 1
-                if page > 40: # 안전 탈출 조건
-                    break
-            except Exception as e:
-                logs.append(f"{market} {page}페이지 로딩 실패: {e}")
-                break
-                
-        if market_stocks:
-            frames.append(pd.DataFrame(market_stocks))
-
-    if not frames:
-        # 백업: FDR 호출
+    # 2차 대비: 실패 시 KOSPI + KOSDAQ 개별 상세 호출
+    if df is None or df.empty or "Marcap" not in df.columns:
         try:
-            df_fallback = fdr.StockListing("KRX")
-            col_rename = {"Symbol": "Code"} if "Symbol" in df_fallback.columns else {}
-            df_fallback = df_fallback.rename(columns=col_rename)
-            df_fallback["Marcap"] = 0
-            return df_fallback[["Code", "Name", "Marcap", "Close"]], logs
-        except Exception:
-            return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
+            df_kospi = fdr.StockListing("KOSPI-DESC")
+            df_kosdaq = fdr.StockListing("KOSDAQ-DESC")
+            df = pd.concat([df_kospi, df_kosdaq], ignore_index=True)
+        except Exception as e:
+            logs.append(f"개별 DESC 실패: {e}")
 
-    result_df = pd.concat(frames, ignore_index=True)
-    result_df = result_df.drop_duplicates(subset=["Code"]).reset_index(drop=True)
-    logs.append(f"원자료 종목 수: {len(result_df):,}개")
-    return result_df, logs
+    # 3차 비상 대비: 일반 KRX
+    if df is None or df.empty:
+        try:
+            df = fdr.StockListing("KRX")
+        except Exception as e:
+            logs.append(f"KRX 기본 호출 실패: {e}")
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Code", "Name", "Marcap", "Close"]), logs
+
+    df = df.copy()
+
+    # 컬럼 대소문자 매핑
+    col_map = {}
+    for c in df.columns:
+        cl = c.lower()
+        if cl in ["code", "symbol"]:
+            col_map[c] = "Code"
+        elif cl == "name":
+            col_map[c] = "Name"
+        elif cl in ["marcap", "marketcap"]:
+            col_map[c] = "Marcap"
+        elif cl == "close":
+            col_map[c] = "Close"
+    df = df.rename(columns=col_map)
+
+    if "Marcap" not in df.columns:
+        df["Marcap"] = 0
+    if "Close" not in df.columns:
+        df["Close"] = 0
+
+    df["Code"] = df["Code"].astype(str).str.zfill(6)
+    df["Marcap"] = pd.to_numeric(df["Marcap"], errors="coerce").fillna(0)
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(0)
+
+    df = df.dropna(subset=["Code", "Name"])
+    logs.append(f"원자료 종목 수: {len(df):,}개")
+    return df[["Code", "Name", "Marcap", "Close"]].reset_index(drop=True), logs
 
 
 def apply_base_filters(stocks):
@@ -222,11 +216,18 @@ def apply_base_filters(stocks):
     ]
     logs.append(f"제외 키워드 필터 후: {len(stocks):,}개")
 
-    # 시가총액 3,000억원 이상 및 최소가격 30,000원 이상 사전 필터링
-    if stocks["Marcap"].max() > 0:
+    # 시가총액 단위 보정 및 필터링
+    max_m = stocks["Marcap"].max()
+    if max_m > 0:
+        if max_m < 1_000_000_000:       # 억원 단위인 경우
+            stocks["Marcap"] = stocks["Marcap"] * 100_000_000
+        elif max_m < 100_000_000_000:   # 백만원 단위인 경우
+            stocks["Marcap"] = stocks["Marcap"] * 1_000_000
+            
         stocks = stocks[stocks["Marcap"] >= MARCAP_MIN]
         logs.append(f"시총 {MARCAP_MIN:,}원 이상 통과: {len(stocks):,}개")
-    
+
+    # 주가 3만원 이상 사전 필터링 (불필요한 동전주/저가주 분석 제외)
     if stocks["Close"].max() > 0:
         stocks = stocks[stocks["Close"] >= PRICE_MIN]
         logs.append(f"가격 {PRICE_MIN:,}원 이상 통과: {len(stocks):,}개")
