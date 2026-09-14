@@ -543,7 +543,14 @@ with col_scan2:
 if scan_full or scan_favorites:
     with st.spinner("종목 리스트 불러오는 중..."):
         stocks, load_logs = load_stock_list()
-
+    
+    # --- 여기서부터 점검용 코드 추가 ---
+    st.write("1. 불러온 원본 종목 수:", len(stocks))
+    if not stocks.empty:
+        st.write("2. 실제 컬럼 목록:", list(stocks.columns))
+        st.write("3. 상위 3개 데이터 샘플:", stocks.head(3))
+    # ---------------------------------
+    
     if stocks.empty:
         st.error("종목 리스트를 불러오지 못했습니다.")
         st.write("발생한 에러 로그:", load_logs)  # <--- 이 줄 추가
